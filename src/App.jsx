@@ -1695,8 +1695,18 @@ function PriceTablesPage() {
   const [loading, setLoading] = useState(true);
   const [expandedTable, setExpandedTable] = useState(null);
   const [zoneView, setZoneView] = useState("bkk");
+  const [xlsxLoaded, setXlsxLoaded] = useState(false);
+  const [importing, setImporting] = useState(null);
 
-  useEffect(() => { loadTables(); }, []);
+  useEffect(() => { loadTables(); loadXlsx(); }, []);
+
+  const loadXlsx = () => {
+    if (window.XLSX) { setXlsxLoaded(true); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    s.onload = () => setXlsxLoaded(true);
+    document.head.appendChild(s);
+  };
 
   const loadTables = async () => {
     const data = await supabase.from("price_tables").select("*", { order: "carrier_code,table_name" });
@@ -1743,6 +1753,120 @@ function PriceTablesPage() {
         style={{ width: 48, padding: "1px 2px", fontSize: 11, border: `1.5px solid ${colors.primary}`, borderRadius: 3, textAlign: "right", fontFamily: font, outline: "none" }}
       />
     );
+  };
+
+  // Download template Excel for a price table
+  const downloadTemplate = (t, tableRates) => {
+    if (!window.XLSX) return alert("กำลังโหลด Excel library...");
+    const ALL_COLS = [
+      "WEIGHT", "SIZE_BKK",
+      "BKK_BKK_COST", "BKK_BKK_PRICE", "BKK_OTHER_COST", "BKK_OTHER_PRICE",
+      "SIZE_CENTRAL",
+      "C_BKK_COST", "C_BKK_PRICE", "C_OTHER_COST", "C_OTHER_PRICE", "C_WITHIN_COST", "C_WITHIN_PRICE",
+      "SIZE_N_BKK",
+      "N_BKK_COST", "N_BKK_PRICE", "N_OTHER_COST", "N_OTHER_PRICE", "N_WITHIN_COST", "N_WITHIN_PRICE",
+      "SIZE_NE_BKK",
+      "NE_BKK_COST", "NE_BKK_PRICE", "NE_OTHER_COST", "NE_OTHER_PRICE", "NE_WITHIN_COST", "NE_WITHIN_PRICE",
+      "SIZE_S_BKK",
+      "S_BKK_COST", "S_BKK_PRICE", "S_OTHER_COST", "S_OTHER_PRICE", "S_WITHIN_COST", "S_WITHIN_PRICE",
+    ];
+    const fieldMap = {
+      WEIGHT: "weight_kg", SIZE_BKK: "size_bkk",
+      BKK_BKK_COST: "bkk_bkk_cost", BKK_BKK_PRICE: "bkk_bkk_price",
+      BKK_OTHER_COST: "bkk_other_cost", BKK_OTHER_PRICE: "bkk_other_price",
+      SIZE_CENTRAL: "size_central",
+      C_BKK_COST: "c_bkk_cost", C_BKK_PRICE: "c_bkk_price",
+      C_OTHER_COST: "c_other_cost", C_OTHER_PRICE: "c_other_price",
+      C_WITHIN_COST: "c_within_cost", C_WITHIN_PRICE: "c_within_price",
+      SIZE_N_BKK: "size_north",
+      N_BKK_COST: "n_bkk_cost", N_BKK_PRICE: "n_bkk_price",
+      N_OTHER_COST: "n_other_cost", N_OTHER_PRICE: "n_other_price",
+      N_WITHIN_COST: "n_within_cost", N_WITHIN_PRICE: "n_within_price",
+      SIZE_NE_BKK: "size_northeast",
+      NE_BKK_COST: "ne_bkk_cost", NE_BKK_PRICE: "ne_bkk_price",
+      NE_OTHER_COST: "ne_other_cost", NE_OTHER_PRICE: "ne_other_price",
+      NE_WITHIN_COST: "ne_within_cost", NE_WITHIN_PRICE: "ne_within_price",
+      SIZE_S_BKK: "size_south",
+      S_BKK_COST: "s_bkk_cost", S_BKK_PRICE: "s_bkk_price",
+      S_OTHER_COST: "s_other_cost", S_OTHER_PRICE: "s_other_price",
+      S_WITHIN_COST: "s_within_cost", S_WITHIN_PRICE: "s_within_price",
+    };
+    const rows = tableRates.map(r => {
+      const row = {};
+      ALL_COLS.forEach(col => { row[col] = r[fieldMap[col]] || 0; });
+      return row;
+    });
+    const ws = window.XLSX.utils.json_to_sheet(rows, { header: ALL_COLS });
+    const wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    window.XLSX.writeFile(wb, `${t.table_name}_pricetable.xlsx`);
+  };
+
+  // Import Excel to update rates for a table
+  const handleImportFile = async (e, tableId) => {
+    const file = e.target.files[0];
+    if (!file || !window.XLSX) return;
+    setImporting(tableId);
+
+    const fieldMap = {
+      WEIGHT: "weight_kg", SIZE_BKK: "size_bkk",
+      BKK_BKK_COST: "bkk_bkk_cost", BKK_BKK_PRICE: "bkk_bkk_price",
+      BKK_OTHER_COST: "bkk_other_cost", BKK_OTHER_PRICE: "bkk_other_price",
+      SIZE_CENTRAL: "size_central",
+      C_BKK_COST: "c_bkk_cost", C_BKK_PRICE: "c_bkk_price",
+      C_OTHER_COST: "c_other_cost", C_OTHER_PRICE: "c_other_price",
+      C_WITHIN_COST: "c_within_cost", C_WITHIN_PRICE: "c_within_price",
+      SIZE_N_BKK: "size_north",
+      N_BKK_COST: "n_bkk_cost", N_BKK_PRICE: "n_bkk_price",
+      N_OTHER_COST: "n_other_cost", N_OTHER_PRICE: "n_other_price",
+      N_WITHIN_COST: "n_within_cost", N_WITHIN_PRICE: "n_within_price",
+      SIZE_NE_BKK: "size_northeast",
+      NE_BKK_COST: "ne_bkk_cost", NE_BKK_PRICE: "ne_bkk_price",
+      NE_OTHER_COST: "ne_other_cost", NE_OTHER_PRICE: "ne_other_price",
+      NE_WITHIN_COST: "ne_within_cost", NE_WITHIN_PRICE: "ne_within_price",
+      SIZE_S_BKK: "size_south",
+      S_BKK_COST: "s_bkk_cost", S_BKK_PRICE: "s_bkk_price",
+      S_OTHER_COST: "s_other_cost", S_OTHER_PRICE: "s_other_price",
+      S_WITHIN_COST: "s_within_cost", S_WITHIN_PRICE: "s_within_price",
+    };
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const wb = window.XLSX.read(ev.target.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = window.XLSX.utils.sheet_to_json(ws, { defval: 0 });
+
+        // Delete existing rates first
+        const existingRates = rates[tableId] || [];
+        for (const r of existingRates) {
+          await supabase.from("price_table_rates").delete({ id: r.id });
+        }
+
+        // Insert new rates
+        const newRates = raw.filter(r => r.WEIGHT && r.WEIGHT > 0).map(row => {
+          const mapped = { price_table_id: tableId };
+          Object.entries(fieldMap).forEach(([excelCol, dbField]) => {
+            mapped[dbField] = parseFloat(row[excelCol]) || 0;
+          });
+          return mapped;
+        });
+
+        // Batch insert
+        const batchSize = 50;
+        for (let i = 0; i < newRates.length; i += batchSize) {
+          await supabase.from("price_table_rates").insert(newRates.slice(i, i + batchSize));
+        }
+
+        alert(`นำเข้าสำเร็จ ${newRates.length} รายการ`);
+        await loadRates(tableId);
+      } catch (err) {
+        alert("นำเข้าไม่สำเร็จ: " + err.message);
+      }
+      setImporting(null);
+      e.target.value = "";
+    };
+    reader.readAsArrayBuffer(file);
   };
 
   const carrierColors = {
@@ -1832,6 +1956,19 @@ function PriceTablesPage() {
 
               {isExpanded && (
                 <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${colors.borderLight}` }}>
+                  {/* Action buttons */}
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+                    <button onClick={() => downloadTemplate(t, tableRates)} disabled={tableRates.length === 0}
+                      style={{ padding: "7px 16px", fontSize: 12, borderRadius: 8, border: `1.5px solid ${colors.primary}`, background: "transparent", color: colors.primary, cursor: "pointer", fontFamily: font, fontWeight: 500, opacity: tableRates.length === 0 ? 0.4 : 1 }}>
+                      ดาวน์โหลดเทมเพลต (.xlsx)
+                    </button>
+                    <label style={{ padding: "7px 16px", fontSize: 12, borderRadius: 8, border: `1.5px solid ${colors.primary}`, background: "transparent", color: colors.primary, cursor: xlsxLoaded ? "pointer" : "default", fontFamily: font, fontWeight: 500, opacity: xlsxLoaded ? 1 : 0.4 }}>
+                      {importing === t.id ? "กำลังนำเข้า..." : "นำเข้าราคา (.xlsx)"}
+                      <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportFile(e, t.id)} disabled={!xlsxLoaded || importing === t.id}
+                        style={{ display: "none" }} />
+                    </label>
+                  </div>
+
                   {tableRates.length === 0 ? (
                     <div style={{ color: colors.textLight, fontSize: 12, padding: 12, textAlign: "center" }}>ยังไม่มีข้อมูลราคา</div>
                   ) : (
