@@ -613,7 +613,7 @@ function CustomersPage() {
 // ============================================================
 const CARRIER_MAPS = {
   DHL: { label:"DHL", sheet:"ข้อมูลรายละเอียด", cols:{ ship_date:"Pick up date", tracking_no:" Tracking Number", order_no:"CustomerTracking Number", customer_name:"Customer Name", recipient_name:"Consignee Name", destination:"Province", weight_kg:"น้ำหนักที่คิดค่าขนส่ง (Kg)", cod_amount:"COD Amount", shipping_cost:"Total", sell_price:"Total รวม Vat" }},
-  FLASH: { label:"Flash Express", sheet:"Daily report", cols:{ ship_date:"PU time", tracking_no:"Tracking No.", order_no:"Order No.", customer_name:"Sub-account Name", recipient_name:"Consignee", destination:"Consignee address", weight_kg:"Final Weight", cod_amount:"COD Amt", shipping_cost:"TOTAL", sell_price:"Total รวม Vat", status:"Status" }},
+  FLASH: { label:"Flash Express", sheet:"Daily report", cols:{ ship_date:"PU time", tracking_no:"Tracking No.", order_no:"Order No.", customer_name:"Sub-account Name", recipient_name:"Consignee", destination:"Consignee address", weight_kg:"Final Weight", cod_amount:"COD Amt", shipping_cost:"TOTAL Flash", sell_price:"TOTAL", status:"Status" }},
   WEFASTD: { label:"WefastD", sheet:"ข้อมูลรายละเอียด", cols:{ ship_date:"Date", tracking_no:"เลขพัสดุ", order_no:"รหัสอ้างอิง", customer_name:"Customer name", recipient_name:"ผู้รับ", weight_kg:"น้ำหนัก (kg)", shipping_cost:"Grand Total", sell_price:"Grand Total", carrier_sub:"ขนส่ง" }},
   WFG: { label:"WefastGO", sheet:"วางข้อมูล", cols:{ ship_date:"Date", tracking_no:"เลขพัสดุ", order_no:"รหัสลูกค้า", customer_name:"รหัสลูกค้า", destination:"พื้นที่", weight_kg:"น้ำหนัก(KG.)", cod_amount:"COD", shipping_cost:"ทุน(สุทธิ)", sell_price:"Grand Total", status:"สถานะ", carrier_sub:"ขนส่ง" }},
 };
@@ -925,6 +925,17 @@ function OrdersPage() {
       <div style={css.card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 14, fontWeight: 600 }}>รายการออเดอร์ ({orders.length})</div>
+          {orders.length > 0 && (
+            <button onClick={async () => {
+              if (!confirm(`ต้องการลบออเดอร์ทั้งหมด ${orders.length} รายการ? (ลบแล้วกู้คืนไม่ได้)`)) return;
+              try {
+                for (const o of orders) { await supabase.from("orders").delete({ id: o.id }); }
+                loadData();
+              } catch (e) { alert("ลบไม่สำเร็จ: " + e.message); }
+            }} style={{ fontSize: 12, color: colors.danger, cursor: "pointer", background: "none", border: "none", fontFamily: font }}>
+              ลบทั้งหมด
+            </button>
+          )}
         </div>
         {loading ? (
           <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
@@ -937,9 +948,18 @@ function OrdersPage() {
               { key: "recipient_name", label: "ผู้รับ" },
               { key: "weight_kg", label: "น้ำหนัก" },
               { key: "cod_amount", label: "COD", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+              { key: "shipping_cost", label: "ต้นทุน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
               { key: "sell_price", label: "ราคาขาย", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
               { key: "status", label: "สถานะ", render: statusBadge },
               { key: "source", label: "แหล่ง", render: (v) => v ? <Badge type="info">{v}</Badge> : "-" },
+              { key: "id", label: "", render: (v) => (
+                <span onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!confirm("ลบรายการนี้?")) return;
+                  await supabase.from("orders").delete({ id: v });
+                  loadData();
+                }} style={{ color: colors.danger, cursor: "pointer", fontSize: 12 }}>ลบ</span>
+              )},
             ]}
             data={orders}
           />
