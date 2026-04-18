@@ -1,0 +1,1061 @@
+import { useState, useEffect, useCallback, createContext, useContext } from "react";
+
+// ============================================================
+// SUPABASE CLIENT
+// ============================================================
+const SUPABASE_URL = "https://tdkppvsnlyqkgxrqmuat.supabase.co";
+const SUPABASE_KEY = "sb_publishable_pIWup7aav3nQVtvXXiYFJA_9QimJSIW";
+
+const supabaseHeaders = (token) => ({
+  apikey: SUPABASE_KEY,
+  Authorization: `Bearer ${token || SUPABASE_KEY}`,
+  "Content-Type": "application/json",
+  Prefer: "return=representation",
+});
+
+const supabase = {
+  auth: {
+    signIn: async (email, password) => {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_KEY },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error_description || data.msg || "Login failed");
+      return data;
+    },
+    signOut: () => {
+      localStorage.removeItem("wf_session");
+    },
+    getSession: () => {
+      try {
+        return JSON.parse(localStorage.getItem("wf_session"));
+      } catch {
+        return null;
+      }
+    },
+  },
+  from: (table) => {
+    const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+    const token = session?.access_token;
+    return {
+      select: async (columns = "*", params = {}) => {
+        let url = `${SUPABASE_URL}/rest/v1/${table}?select=${columns}`;
+        Object.entries(params).forEach(([k, v]) => {
+          url += `&${k}=${v}`;
+        });
+        const res = await fetch(url, { headers: supabaseHeaders(token) });
+        if (!res.ok) return [];
+        return res.json();
+      },
+      insert: async (rows) => {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+          method: "POST",
+          headers: supabaseHeaders(token),
+          body: JSON.stringify(rows),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.message || "Insert failed");
+        }
+        return res.json();
+      },
+      update: async (data, match) => {
+        let url = `${SUPABASE_URL}/rest/v1/${table}?`;
+        Object.entries(match).forEach(([k, v]) => {
+          url += `${k}=eq.${v}&`;
+        });
+        const res = await fetch(url, {
+          method: "PATCH",
+          headers: supabaseHeaders(token),
+          body: JSON.stringify(data),
+        });
+        if (!res.ok) throw new Error("Update failed");
+        return res.json();
+      },
+      delete: async (match) => {
+        let url = `${SUPABASE_URL}/rest/v1/${table}?`;
+        Object.entries(match).forEach(([k, v]) => {
+          url += `${k}=eq.${v}&`;
+        });
+        return fetch(url, { method: "DELETE", headers: supabaseHeaders(token) });
+      },
+    };
+  },
+  rpc: async (fn, params = {}) => {
+    const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+    const token = session?.access_token;
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+      method: "POST",
+      headers: supabaseHeaders(token),
+      body: JSON.stringify(params),
+    });
+    return res.json();
+  },
+};
+
+// ============================================================
+// CONTEXT
+// ============================================================
+const AuthContext = createContext(null);
+const useAuth = () => useContext(AuthContext);
+
+// ============================================================
+// STYLES
+// ============================================================
+const font = "'DM Sans', 'Noto Sans Thai', sans-serif";
+const colors = {
+  bg: "#f8f7f4",
+  card: "#ffffff",
+  primary: "#1a6b4f",
+  primaryLight: "#e8f5ee",
+  primaryDark: "#0f4a35",
+  accent: "#e8913a",
+  accentLight: "#fef3e2",
+  danger: "#c0392b",
+  dangerLight: "#fdeaea",
+  info: "#2980b9",
+  infoLight: "#e8f4fd",
+  warning: "#f39c12",
+  warningLight: "#fef9e7",
+  text: "#2c2c2a",
+  textMuted: "#7a7a72",
+  textLight: "#a8a8a0",
+  border: "#e8e6e0",
+  borderLight: "#f0eeea",
+};
+
+const css = {
+  app: {
+    fontFamily: font,
+    background: colors.bg,
+    minHeight: "100vh",
+    color: colors.text,
+  },
+  // Login
+  loginWrap: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: `linear-gradient(135deg, ${colors.primary} 0%, ${colors.primaryDark} 100%)`,
+  },
+  loginCard: {
+    background: colors.card,
+    borderRadius: 16,
+    padding: "48px 40px",
+    width: 400,
+    maxWidth: "90vw",
+  },
+  loginLogo: {
+    fontSize: 28,
+    fontWeight: 700,
+    color: colors.primary,
+    textAlign: "center",
+    marginBottom: 4,
+    letterSpacing: -0.5,
+  },
+  loginSub: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: "center",
+    marginBottom: 32,
+  },
+  input: {
+    width: "100%",
+    padding: "12px 16px",
+    border: `1.5px solid ${colors.border}`,
+    borderRadius: 10,
+    fontSize: 15,
+    fontFamily: font,
+    outline: "none",
+    boxSizing: "border-box",
+    transition: "border-color 0.2s",
+    background: colors.bg,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: 500,
+    color: colors.textMuted,
+    marginBottom: 6,
+    display: "block",
+  },
+  btnPrimary: {
+    width: "100%",
+    padding: "13px 24px",
+    background: colors.primary,
+    color: "#fff",
+    border: "none",
+    borderRadius: 10,
+    fontSize: 15,
+    fontWeight: 600,
+    fontFamily: font,
+    cursor: "pointer",
+    transition: "all 0.2s",
+  },
+  // Layout
+  sidebar: {
+    width: 240,
+    background: colors.card,
+    borderRight: `1px solid ${colors.border}`,
+    height: "100vh",
+    position: "fixed",
+    left: 0,
+    top: 0,
+    display: "flex",
+    flexDirection: "column",
+    zIndex: 10,
+  },
+  main: {
+    marginLeft: 240,
+    padding: "24px 32px",
+    minHeight: "100vh",
+  },
+  // Cards & metrics
+  metricGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: 14,
+    marginBottom: 20,
+  },
+  metric: {
+    background: colors.card,
+    borderRadius: 12,
+    padding: "18px 20px",
+    border: `1px solid ${colors.borderLight}`,
+  },
+  card: {
+    background: colors.card,
+    borderRadius: 14,
+    padding: "20px 24px",
+    border: `1px solid ${colors.borderLight}`,
+    marginBottom: 16,
+  },
+};
+
+// ============================================================
+// COMPONENTS
+// ============================================================
+
+// --- Badge ---
+function Badge({ children, type = "default" }) {
+  const styles = {
+    success: { background: colors.primaryLight, color: colors.primary },
+    danger: { background: colors.dangerLight, color: colors.danger },
+    warning: { background: colors.warningLight, color: colors.warning },
+    info: { background: colors.infoLight, color: colors.info },
+    default: { background: colors.borderLight, color: colors.textMuted },
+  };
+  return (
+    <span style={{ ...styles[type], fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20, whiteSpace: "nowrap" }}>
+      {children}
+    </span>
+  );
+}
+
+// --- Metric Card ---
+function MetricCard({ label, value, sub, subType }) {
+  return (
+    <div style={css.metric}>
+      <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>{value}</div>
+      {sub && (
+        <div style={{ fontSize: 12, marginTop: 4, color: subType === "up" ? colors.primary : subType === "down" ? colors.danger : colors.textMuted }}>
+          {sub}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Simple Table ---
+function DataTable({ columns, data, onRowClick }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, fontFamily: font }}>
+        <thead>
+          <tr>
+            {columns.map((col) => (
+              <th key={col.key} style={{ textAlign: "left", fontWeight: 600, color: colors.textMuted, padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, fontSize: 12 }}>
+                {col.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.length === 0 ? (
+            <tr><td colSpan={columns.length} style={{ padding: 24, textAlign: "center", color: colors.textLight }}>ยังไม่มีข้อมูล</td></tr>
+          ) : (
+            data.map((row, i) => (
+              <tr key={i} onClick={() => onRowClick?.(row)} style={{ cursor: onRowClick ? "pointer" : "default", transition: "background 0.15s" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = colors.bg)}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+                {columns.map((col) => (
+                  <td key={col.key} style={{ padding: "10px 10px", borderBottom: `1px solid ${colors.borderLight}` }}>
+                    {col.render ? col.render(row[col.key], row) : row[col.key] ?? "-"}
+                  </td>
+                ))}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ============================================================
+// LOGIN PAGE
+// ============================================================
+function LoginPage({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const data = await supabase.auth.signIn(email, password);
+      localStorage.setItem("wf_session", JSON.stringify(data));
+      onLogin(data);
+    } catch (err) {
+      setError(err.message === "Invalid login credentials" ? "อีเมลหรือรหัสผ่านไม่ถูกต้อง" : err.message);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={css.loginWrap}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      <div style={css.loginCard}>
+        <div style={css.loginLogo}>WhaleFast</div>
+        <div style={css.loginSub}>CRM ระบบจัดการข้อมูลองค์กร</div>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={css.label}>อีเมล</label>
+            <input style={css.input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@company.com" required />
+          </div>
+          <div style={{ marginBottom: 24 }}>
+            <label style={css.label}>รหัสผ่าน</label>
+            <input style={css.input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="รหัสผ่าน" required />
+          </div>
+          {error && (
+            <div style={{ background: colors.dangerLight, color: colors.danger, fontSize: 13, padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>
+              {error}
+            </div>
+          )}
+          <button type="submit" style={{ ...css.btnPrimary, opacity: loading ? 0.7 : 1 }} disabled={loading}>
+            {loading ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SIDEBAR
+// ============================================================
+const menuItems = {
+  manager: [
+    { key: "dashboard", label: "Dashboard", icon: "◈" },
+    { key: "customers", label: "ลูกค้า", icon: "◎" },
+    { key: "orders", label: "ออเดอร์", icon: "▤" },
+    { key: "invoices", label: "การเงิน", icon: "◇" },
+    { key: "expenses", label: "ค่าใช้จ่าย", icon: "▦" },
+    { key: "cases", label: "CS/เคส", icon: "◉" },
+    { key: "carriers", label: "ขนส่ง", icon: "▷" },
+    { key: "activity", label: "Activity Log", icon: "◔" },
+  ],
+  admin: [
+    { key: "dashboard", label: "Dashboard", icon: "◈" },
+    { key: "customers", label: "ลูกค้า", icon: "◎" },
+    { key: "orders", label: "ออเดอร์/นำเข้า", icon: "▤" },
+    { key: "invoices", label: "วางบิล", icon: "◇" },
+    { key: "carriers", label: "กระทบยอดขนส่ง", icon: "▷" },
+  ],
+  accounting: [
+    { key: "dashboard", label: "Dashboard", icon: "◈" },
+    { key: "invoices", label: "บิลลค./AP", icon: "◇" },
+    { key: "expenses", label: "ค่าใช้จ่าย", icon: "▦" },
+  ],
+  cs: [
+    { key: "dashboard", label: "Dashboard", icon: "◈" },
+    { key: "customers", label: "ข้อมูลลค.", icon: "◎" },
+    { key: "orders", label: "ติดตามพัสดุ", icon: "▤" },
+    { key: "cases", label: "เคส/เคลม", icon: "◉" },
+  ],
+  sales: [
+    { key: "dashboard", label: "Dashboard", icon: "◈" },
+    { key: "customers", label: "ลูกค้า", icon: "◎" },
+    { key: "leads", label: "Pipeline", icon: "◇" },
+  ],
+};
+
+function Sidebar({ user, currentPage, onNavigate, onLogout }) {
+  const role = user?.role || "manager";
+  const items = menuItems[role] || menuItems.manager;
+  const roleLabels = { manager: "ผู้บริหาร", admin: "Admin", accounting: "บัญชี", cs: "CS/Support", sales: "ฝ่ายขาย" };
+
+  return (
+    <div style={css.sidebar}>
+      <div style={{ padding: "24px 20px 16px" }}>
+        <div style={{ fontSize: 20, fontWeight: 700, color: colors.primary, letterSpacing: -0.5 }}>WhaleFast</div>
+        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>CRM</div>
+      </div>
+      <div style={{ flex: 1, padding: "0 12px" }}>
+        {items.map((item) => (
+          <div
+            key={item.key}
+            onClick={() => onNavigate(item.key)}
+            style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
+              borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: currentPage === item.key ? 600 : 400,
+              color: currentPage === item.key ? colors.primary : colors.text,
+              background: currentPage === item.key ? colors.primaryLight : "transparent",
+              marginBottom: 2, transition: "all 0.15s",
+            }}
+          >
+            <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{item.icon}</span>
+            {item.label}
+          </div>
+        ))}
+      </div>
+      <div style={{ padding: "16px 16px 20px", borderTop: `1px solid ${colors.border}` }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{user?.name || "User"}</div>
+        <div style={{ fontSize: 11, color: colors.textMuted }}>{roleLabels[role]}</div>
+        <div
+          onClick={onLogout}
+          style={{ fontSize: 12, color: colors.danger, cursor: "pointer", marginTop: 8 }}
+        >
+          ออกจากระบบ
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// DASHBOARD PAGE
+// ============================================================
+function DashboardPage() {
+  const [stats, setStats] = useState({ orders: 0, sales: 0, customers: 0, carriers: 0 });
+  const [recentOrders, setRecentOrders] = useState([]);
+  const [activities, setActivities] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
+  const loadDashboard = async () => {
+    try {
+      const [orders, customers, carriers, activity] = await Promise.all([
+        supabase.from("orders").select("id,sell_price,ship_date,status,customer_id", { order: "ship_date.desc", limit: 10 }),
+        supabase.from("customers").select("id"),
+        supabase.from("carriers").select("id,name"),
+        supabase.from("activity_log").select("id,action,description,created_at,user_id", { order: "created_at.desc", limit: 5 }),
+      ]);
+
+      const totalSales = Array.isArray(orders) ? orders.reduce((sum, o) => sum + (parseFloat(o.sell_price) || 0), 0) : 0;
+
+      setStats({
+        orders: Array.isArray(orders) ? orders.length : 0,
+        sales: totalSales,
+        customers: Array.isArray(customers) ? customers.length : 0,
+        carriers: Array.isArray(carriers) ? carriers.length : 0,
+      });
+      setRecentOrders(Array.isArray(orders) ? orders.slice(0, 5) : []);
+      setActivities(Array.isArray(activity) ? activity : []);
+    } catch (e) {
+      console.error("Dashboard load error:", e);
+    }
+    setLoading(false);
+  };
+
+  if (loading) return <div style={{ padding: 40, textAlign: "center", color: colors.textMuted }}>กำลังโหลด...</div>;
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>Dashboard</h2>
+      <div style={css.metricGrid}>
+        <MetricCard label="ออเดอร์ทั้งหมด" value={stats.orders.toLocaleString()} sub={stats.orders === 0 ? "ยังไม่มีข้อมูล" : null} />
+        <MetricCard label="ยอดขายรวม" value={`฿${stats.sales.toLocaleString()}`} />
+        <MetricCard label="ลูกค้า" value={stats.customers.toLocaleString()} />
+        <MetricCard label="ขนส่ง" value={stats.carriers.toLocaleString()} sub="เจ้า" />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={css.card}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>ออเดอร์ล่าสุด</h3>
+          {recentOrders.length === 0 ? (
+            <div style={{ color: colors.textLight, fontSize: 13, padding: 16, textAlign: "center" }}>ยังไม่มีออเดอร์ — เพิ่มออเดอร์แรกได้ที่เมนู "ออเดอร์"</div>
+          ) : (
+            <DataTable
+              columns={[
+                { key: "ship_date", label: "วันที่" },
+                { key: "sell_price", label: "ยอด", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+                { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "delivered" ? "success" : v === "disputed" ? "danger" : "warning"}>{v}</Badge> },
+              ]}
+              data={recentOrders}
+            />
+          )}
+        </div>
+
+        <div style={css.card}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>กิจกรรมล่าสุด</h3>
+          {activities.length === 0 ? (
+            <div style={{ color: colors.textLight, fontSize: 13, padding: 16, textAlign: "center" }}>ยังไม่มีกิจกรรม — เมื่อเริ่มใช้งานระบบ กิจกรรมจะแสดงที่นี่</div>
+          ) : (
+            activities.map((a) => (
+              <div key={a.id} style={{ padding: "8px 0", borderBottom: `1px solid ${colors.borderLight}`, fontSize: 13 }}>
+                <div>{a.description || a.action}</div>
+                <div style={{ fontSize: 11, color: colors.textLight, marginTop: 2 }}>{new Date(a.created_at).toLocaleString("th-TH")}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CUSTOMERS PAGE
+// ============================================================
+function CustomersPage() {
+  const [customers, setCustomers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ company_name: "", contact_name: "", phone: "", email: "", address: "", payment_terms: "30 วัน" });
+  const auth = useAuth();
+
+  useEffect(() => { loadCustomers(); }, []);
+
+  const loadCustomers = async () => {
+    const data = await supabase.from("customers").select("*", { order: "created_at.desc" });
+    setCustomers(Array.isArray(data) ? data : []);
+    setLoading(false);
+  };
+
+  const handleAdd = async () => {
+    try {
+      await supabase.from("customers").insert({ ...form, sales_person_id: auth?.user?.id });
+      setShowForm(false);
+      setForm({ company_name: "", contact_name: "", phone: "", email: "", address: "", payment_terms: "30 วัน" });
+      loadCustomers();
+    } catch (e) {
+      alert("เกิดข้อผิดพลาด: " + e.message);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>ลูกค้า</h2>
+        <button onClick={() => setShowForm(!showForm)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 20px", fontSize: 13 }}>
+          + เพิ่มลูกค้า
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ ...css.card, marginBottom: 20 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>เพิ่มลูกค้าใหม่</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {[
+              { key: "company_name", label: "ชื่อบริษัท *", placeholder: "บจ. ..." },
+              { key: "contact_name", label: "ชื่อผู้ติดต่อ", placeholder: "ชื่อ-นามสกุล" },
+              { key: "phone", label: "เบอร์โทร", placeholder: "0xx-xxx-xxxx" },
+              { key: "email", label: "อีเมล", placeholder: "email@company.com" },
+              { key: "address", label: "ที่อยู่", placeholder: "ที่อยู่บริษัท" },
+              { key: "payment_terms", label: "เงื่อนไขชำระ", placeholder: "30 วัน" },
+            ].map((f) => (
+              <div key={f.key}>
+                <label style={css.label}>{f.label}</label>
+                <input style={css.input} placeholder={f.placeholder} value={form[f.key]} onChange={(e) => setForm({ ...form, [f.key]: e.target.value })} />
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={handleAdd} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13 }}>บันทึก</button>
+            <button onClick={() => setShowForm(false)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.border, color: colors.text }}>ยกเลิก</button>
+          </div>
+        </div>
+      )}
+
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "company_name", label: "ชื่อบริษัท" },
+              { key: "contact_name", label: "ผู้ติดต่อ" },
+              { key: "phone", label: "เบอร์โทร" },
+              { key: "email", label: "อีเมล" },
+              { key: "payment_terms", label: "เงื่อนไข" },
+              { key: "is_active", label: "สถานะ", render: (v) => <Badge type={v ? "success" : "default"}>{v ? "ใช้งาน" : "ปิด"}</Badge> },
+            ]}
+            data={customers}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ORDERS PAGE
+// ============================================================
+function OrdersPage() {
+  const [orders, setOrders] = useState([]);
+  const [carriers, setCarriers] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({
+    customer_id: "", carrier_id: "", tracking_no: "", order_no: "", recipient_name: "",
+    destination: "", weight_kg: "", cod_amount: "0", shipping_cost: "0", sell_price: "0",
+  });
+  const auth = useAuth();
+
+  useEffect(() => { loadData(); }, []);
+
+  const loadData = async () => {
+    const [o, car, cus] = await Promise.all([
+      supabase.from("orders").select("*,customers(company_name),carriers(name)", { order: "created_at.desc" }),
+      supabase.from("carriers").select("id,name"),
+      supabase.from("customers").select("id,company_name"),
+    ]);
+    setOrders(Array.isArray(o) ? o : []);
+    setCarriers(Array.isArray(car) ? car : []);
+    setCustomers(Array.isArray(cus) ? cus : []);
+    setLoading(false);
+  };
+
+  const handleAdd = async () => {
+    try {
+      await supabase.from("orders").insert({
+        ...form,
+        weight_kg: parseFloat(form.weight_kg) || 0,
+        cod_amount: parseFloat(form.cod_amount) || 0,
+        shipping_cost: parseFloat(form.shipping_cost) || 0,
+        sell_price: parseFloat(form.sell_price) || 0,
+        ship_date: new Date().toISOString().split("T")[0],
+        created_by: auth?.user?.id,
+      });
+      setShowForm(false);
+      setForm({ customer_id: "", carrier_id: "", tracking_no: "", order_no: "", recipient_name: "", destination: "", weight_kg: "", cod_amount: "0", shipping_cost: "0", sell_price: "0" });
+      loadData();
+    } catch (e) {
+      alert("เกิดข้อผิดพลาด: " + e.message);
+    }
+  };
+
+  const statusBadge = (v) => {
+    const m = { pending: "warning", processing: "info", delivered: "success", returned: "danger", disputed: "danger", cancelled: "default" };
+    const labels = { pending: "รอดำเนินการ", processing: "กำลังจัดส่ง", delivered: "สำเร็จ", returned: "ตีกลับ", disputed: "แย้งบิล", cancelled: "ยกเลิก" };
+    return <Badge type={m[v] || "default"}>{labels[v] || v}</Badge>;
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>ออเดอร์</h2>
+        <button onClick={() => setShowForm(!showForm)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 20px", fontSize: 13 }}>
+          + เพิ่มออเดอร์
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ ...css.card, marginBottom: 20 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>เพิ่มออเดอร์ใหม่</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={css.label}>ลูกค้า *</label>
+              <select style={css.input} value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })}>
+                <option value="">เลือกลูกค้า</option>
+                {customers.map((c) => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={css.label}>ขนส่ง *</label>
+              <select style={css.input} value={form.carrier_id} onChange={(e) => setForm({ ...form, carrier_id: e.target.value })}>
+                <option value="">เลือกขนส่ง</option>
+                {carriers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            {[
+              { key: "tracking_no", label: "Tracking No.", placeholder: "FL240418001" },
+              { key: "order_no", label: "Order No.", placeholder: "ORD-001" },
+              { key: "recipient_name", label: "ชื่อผู้รับ", placeholder: "ชื่อ" },
+              { key: "destination", label: "ปลายทาง", placeholder: "จังหวัด" },
+              { key: "weight_kg", label: "น้ำหนัก (kg)", placeholder: "0.5" },
+              { key: "cod_amount", label: "COD", placeholder: "0" },
+              { key: "shipping_cost", label: "ต้นทุนขนส่ง", placeholder: "0" },
+              { key: "sell_price", label: "ราคาขาย", placeholder: "0" },
+            ].map((f) => (
+              <div key={f.key}>
+                <label style={css.label}>{f.label}</label>
+                <input style={css.input} placeholder={f.placeholder} value={form[f.key]} onChange={(e) => setForm({ ...form, [f.key]: e.target.value })} />
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={handleAdd} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13 }}>บันทึก</button>
+            <button onClick={() => setShowForm(false)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.border, color: colors.text }}>ยกเลิก</button>
+          </div>
+        </div>
+      )}
+
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "ship_date", label: "วันที่" },
+              { key: "tracking_no", label: "Tracking" },
+              { key: "customers", label: "ลูกค้า", render: (v) => v?.company_name || "-" },
+              { key: "carriers", label: "ขนส่ง", render: (v) => v?.name || "-" },
+              { key: "weight_kg", label: "น้ำหนัก" },
+              { key: "cod_amount", label: "COD", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+              { key: "sell_price", label: "ราคาขาย", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+              { key: "status", label: "สถานะ", render: statusBadge },
+            ]}
+            data={orders}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// INVOICES PAGE
+// ============================================================
+function InvoicesPage() {
+  const [invoices, setInvoices] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const data = await supabase.from("invoices").select("*,customers(company_name)", { order: "created_at.desc" });
+      setInvoices(Array.isArray(data) ? data : []);
+      setLoading(false);
+    })();
+  }, []);
+
+  const statusBadge = (v) => {
+    const m = { draft: "default", sent: "info", paid: "success", overdue: "danger", cancelled: "default" };
+    const l = { draft: "ร่าง", sent: "ส่งแล้ว", paid: "ชำระแล้ว", overdue: "เกินกำหนด", cancelled: "ยกเลิก" };
+    return <Badge type={m[v]}>{l[v] || v}</Badge>;
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>การเงิน / บิล</h2>
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "invoice_no", label: "เลขบิล" },
+              { key: "type", label: "ประเภท", render: (v) => <Badge type={v === "receivable" ? "success" : "warning"}>{v === "receivable" ? "รายรับ" : "รายจ่าย"}</Badge> },
+              { key: "customers", label: "ลูกค้า", render: (v) => v?.company_name || "-" },
+              { key: "total_amount", label: "จำนวนเงิน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+              { key: "due_date", label: "ครบกำหนด" },
+              { key: "status", label: "สถานะ", render: statusBadge },
+            ]}
+            data={invoices}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// EXPENSES PAGE
+// ============================================================
+function ExpensesPage() {
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const data = await supabase.from("expenses").select("*", { order: "created_at.desc" });
+      setExpenses(Array.isArray(data) ? data : []);
+      setLoading(false);
+    })();
+  }, []);
+
+  const catLabels = { shipping: "ค่าขนส่ง", rent: "ค่าเช่า", salary: "เงินเดือน", utilities: "สาธารณูปโภค", supplies: "วัสดุ", fuel: "น้ำมัน", insurance: "ประกัน", other: "อื่นๆ" };
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>ค่าใช้จ่าย</h2>
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "expense_date", label: "วันที่" },
+              { key: "category", label: "ประเภท", render: (v) => catLabels[v] || v },
+              { key: "vendor_name", label: "ผู้ขาย" },
+              { key: "description", label: "รายละเอียด" },
+              { key: "amount", label: "จำนวนเงิน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+              { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "paid" ? "success" : v === "approved" ? "info" : "warning"}>{v === "paid" ? "จ่ายแล้ว" : v === "approved" ? "อนุมัติ" : "รอ"}</Badge> },
+            ]}
+            data={expenses}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CASES PAGE
+// ============================================================
+function CasesPage() {
+  const [cases, setCases] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const data = await supabase.from("support_cases").select("*,customers(company_name)", { order: "created_at.desc" });
+      setCases(Array.isArray(data) ? data : []);
+      setLoading(false);
+    })();
+  }, []);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>เคส CS / Support</h2>
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "case_no", label: "เคส" },
+              { key: "customers", label: "ลูกค้า", render: (v) => v?.company_name || "-" },
+              { key: "subject", label: "หัวข้อ" },
+              { key: "priority", label: "ความสำคัญ", render: (v) => <Badge type={v === "urgent" ? "danger" : v === "high" ? "warning" : "default"}>{v}</Badge> },
+              { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "resolved" || v === "closed" ? "success" : v === "open" ? "danger" : "warning"}>{v}</Badge> },
+            ]}
+            data={cases}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CARRIERS PAGE
+// ============================================================
+function CarriersPage() {
+  const [carriers, setCarriers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const data = await supabase.from("carriers").select("*");
+      setCarriers(Array.isArray(data) ? data : []);
+      setLoading(false);
+    })();
+  }, []);
+
+  const cycleLabels = { weekly: "รายสัปดาห์", biweekly: "ทุก 2 สัปดาห์", monthly: "รายเดือน" };
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>ขนส่ง</h2>
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "name", label: "ชื่อขนส่ง" },
+              { key: "code", label: "รหัส" },
+              { key: "billing_cycle", label: "รอบวางบิล", render: (v) => cycleLabels[v] || v },
+              { key: "is_active", label: "สถานะ", render: (v) => <Badge type={v ? "success" : "default"}>{v ? "ใช้งาน" : "ปิด"}</Badge> },
+            ]}
+            data={carriers}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ACTIVITY LOG PAGE
+// ============================================================
+function ActivityPage() {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const data = await supabase.from("activity_log").select("*", { order: "created_at.desc", limit: 50 });
+      setLogs(Array.isArray(data) ? data : []);
+      setLoading(false);
+    })();
+  }, []);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>Activity Log</h2>
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : logs.length === 0 ? (
+          <div style={{ textAlign: "center", color: colors.textLight, padding: 24, fontSize: 13 }}>ยังไม่มีกิจกรรม — เมื่อพนักงานเริ่มใช้ระบบ log จะแสดงที่นี่</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "created_at", label: "เวลา", render: (v) => new Date(v).toLocaleString("th-TH") },
+              { key: "action", label: "การกระทำ" },
+              { key: "target_table", label: "ตาราง" },
+              { key: "description", label: "รายละเอียด" },
+            ]}
+            data={logs}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// LEADS PAGE (Sales)
+// ============================================================
+function LeadsPage() {
+  const [leads, setLeads] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const data = await supabase.from("leads").select("*", { order: "created_at.desc" });
+      setLeads(Array.isArray(data) ? data : []);
+      setLoading(false);
+    })();
+  }, []);
+
+  const statusLabels = { prospect: "เป้าหมาย", contacted: "ติดต่อแล้ว", proposal_sent: "ส่ง Proposal", negotiating: "เจรจา", won: "ปิดได้", lost: "ไม่สำเร็จ" };
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>Pipeline ฝ่ายขาย</h2>
+      <div style={css.card}>
+        {loading ? (
+          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "company_name", label: "บริษัท" },
+              { key: "contact_name", label: "ผู้ติดต่อ" },
+              { key: "phone", label: "เบอร์โทร" },
+              { key: "estimated_monthly_volume", label: "ยอดคาดการณ์/เดือน", render: (v) => v ? `฿${parseFloat(v).toLocaleString()}` : "-" },
+              { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "won" ? "success" : v === "lost" ? "danger" : "info"}>{statusLabels[v] || v}</Badge> },
+            ]}
+            data={leads}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MAIN APP
+// ============================================================
+export default function App() {
+  const [session, setSession] = useState(null);
+  const [user, setUser] = useState(null);
+  const [page, setPage] = useState("dashboard");
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const saved = supabase.auth.getSession();
+    if (saved?.access_token) {
+      setSession(saved);
+      loadUser(saved);
+    } else {
+      setReady(true);
+    }
+  }, []);
+
+  const loadUser = async (s) => {
+    try {
+      const data = await supabase.from("users").select("*", { id: `eq.${s.user.id}` });
+      if (Array.isArray(data) && data.length > 0) {
+        setUser(data[0]);
+      } else {
+        setUser({ id: s.user.id, email: s.user.email, name: s.user.email.split("@")[0], role: "manager" });
+      }
+    } catch {
+      setUser({ id: s.user.id, email: s.user.email, name: s.user.email.split("@")[0], role: "manager" });
+    }
+    setReady(true);
+  };
+
+  const handleLogin = (data) => {
+    setSession(data);
+    loadUser(data);
+  };
+
+  const handleLogout = () => {
+    supabase.auth.signOut();
+    setSession(null);
+    setUser(null);
+    setPage("dashboard");
+  };
+
+  if (!ready) {
+    return (
+      <div style={{ ...css.app, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+        <div style={{ color: colors.textMuted, fontSize: 15 }}>กำลังโหลด WhaleFast CRM...</div>
+      </div>
+    );
+  }
+
+  if (!session) return <LoginPage onLogin={handleLogin} />;
+
+  const pages = {
+    dashboard: DashboardPage,
+    customers: CustomersPage,
+    orders: OrdersPage,
+    invoices: InvoicesPage,
+    expenses: ExpensesPage,
+    cases: CasesPage,
+    carriers: CarriersPage,
+    activity: ActivityPage,
+    leads: LeadsPage,
+  };
+
+  const PageComponent = pages[page] || DashboardPage;
+
+  return (
+    <AuthContext.Provider value={{ session, user }}>
+      <div style={css.app}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+        <Sidebar user={user} currentPage={page} onNavigate={setPage} onLogout={handleLogout} />
+        <div style={css.main}>
+          <PageComponent />
+        </div>
+      </div>
+    </AuthContext.Provider>
+  );
+}
