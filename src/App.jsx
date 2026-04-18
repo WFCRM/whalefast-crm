@@ -381,6 +381,7 @@ const menuItems = {
     { key: "orders", label: "ออเดอร์", icon: "▤" },
     { key: "invoices", label: "การเงิน", icon: "◇" },
     { key: "expenses", label: "ค่าใช้จ่าย", icon: "▦" },
+    { key: "pricing", label: "ตารางราคา", icon: "◫" },
     { key: "cases", label: "CS/เคส", icon: "◉" },
     { key: "carriers", label: "ขนส่ง", icon: "▷" },
     { key: "activity", label: "Activity Log", icon: "◔" },
@@ -389,6 +390,7 @@ const menuItems = {
     { key: "dashboard", label: "Dashboard", icon: "◈" },
     { key: "customers", label: "ลูกค้า", icon: "◎" },
     { key: "orders", label: "ออเดอร์/นำเข้า", icon: "▤" },
+    { key: "pricing", label: "ตารางราคา", icon: "◫" },
     { key: "invoices", label: "วางบิล", icon: "◇" },
     { key: "carriers", label: "กระทบยอดขนส่ง", icon: "▷" },
   ],
@@ -1683,6 +1685,213 @@ function LeadsPage() {
   );
 }
 
+
+// ============================================================
+// PRICE TABLES PAGE — ตารางราคาขนส่งแบ่งตามโซน/พื้นที่
+// ============================================================
+function PriceTablesPage() {
+  const [tables, setTables] = useState([]);
+  const [rates, setRates] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [expandedTable, setExpandedTable] = useState(null);
+  const [zoneView, setZoneView] = useState("bkk");
+
+  useEffect(() => { loadTables(); }, []);
+
+  const loadTables = async () => {
+    const data = await supabase.from("price_tables").select("*", { order: "carrier_code,table_name" });
+    setTables(Array.isArray(data) ? data : []);
+    setLoading(false);
+  };
+
+  const loadRates = async (tableId) => {
+    const data = await supabase.from("price_table_rates").select("*", { price_table_id: `eq.${tableId}`, order: "weight_kg.asc" });
+    setRates(prev => ({ ...prev, [tableId]: Array.isArray(data) ? data : [] }));
+  };
+
+  const toggleExpand = async (tableId) => {
+    if (expandedTable === tableId) { setExpandedTable(null); return; }
+    setExpandedTable(tableId);
+    if (!rates[tableId]) await loadRates(tableId);
+  };
+
+  const handleDeleteTable = async (id) => {
+    if (!confirm("ลบตารางราคานี้ทั้งหมด?")) return;
+    await supabase.from("price_tables").delete({ id });
+    loadTables();
+  };
+
+  // Editable cell
+  const EditCell = ({ rate, field, tableId, extraStyle }) => {
+    const [val, setVal] = useState(rate[field] || 0);
+    const [editing, setEditing] = useState(false);
+    if (!editing) {
+      return (
+        <span onClick={() => setEditing(true)}
+          style={{ cursor: "pointer", display: "block", padding: "1px 3px", borderRadius: 3, textAlign: "right", minWidth: 30, ...(extraStyle || {}) }}
+          onMouseEnter={(e) => e.target.style.background = "#f0f0f0"}
+          onMouseLeave={(e) => e.target.style.background = "transparent"}>
+          {parseFloat(val || 0) % 1 === 0 ? parseInt(val || 0) : parseFloat(val || 0).toFixed(1)}
+        </span>
+      );
+    }
+    return (
+      <input type="number" value={val} autoFocus
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={() => { setEditing(false); if (parseFloat(val) !== parseFloat(rate[field])) { supabase.from("price_table_rates").update({ [field]: parseFloat(val) || 0 }, { id: rate.id }); rate[field] = parseFloat(val) || 0; } }}
+        onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+        style={{ width: 48, padding: "1px 2px", fontSize: 11, border: `1.5px solid ${colors.primary}`, borderRadius: 3, textAlign: "right", fontFamily: font, outline: "none" }}
+      />
+    );
+  };
+
+  const carrierColors = {
+    FLASH: { bg: "#FFF3E0", text: "#E65100" }, DHL: { bg: "#FFFDE7", text: "#F57F17" },
+    KERRY: { bg: "#FFE0B2", text: "#BF360C" }, SPX: { bg: "#FFEBEE", text: "#C62828" },
+  };
+
+  const ZONE_CONFIG = {
+    bkk: { label: "กรุงเทพ/ปริมณฑล", color: "#FFF9C4", sizeField: "size_bkk",
+      subs: [
+        { label: "กทม.\u2192กทม.", cost: "bkk_bkk_cost", price: "bkk_bkk_price" },
+        { label: "กทม.\u2192ต่างจังหวัด", cost: "bkk_other_cost", price: "bkk_other_price" },
+      ]},
+    central: { label: "ภาคกลาง", color: "#E8F5E9", sizeField: "size_central",
+      subs: [
+        { label: "กลาง\u2192กทม.", cost: "c_bkk_cost", price: "c_bkk_price" },
+        { label: "กลาง\u2192ต่างภาค", cost: "c_other_cost", price: "c_other_price" },
+        { label: "กลาง\u2192ในภาค", cost: "c_within_cost", price: "c_within_price" },
+      ]},
+    north: { label: "ภาคเหนือ", color: "#E3F2FD", sizeField: "size_north",
+      subs: [
+        { label: "เหนือ\u2192กทม.", cost: "n_bkk_cost", price: "n_bkk_price" },
+        { label: "เหนือ\u2192ต่างภาค", cost: "n_other_cost", price: "n_other_price" },
+        { label: "เหนือ\u2192ในภาค", cost: "n_within_cost", price: "n_within_price" },
+      ]},
+    northeast: { label: "ภาคอีสาน", color: "#FFF3E0", sizeField: "size_northeast",
+      subs: [
+        { label: "อีสาน\u2192กทม.", cost: "ne_bkk_cost", price: "ne_bkk_price" },
+        { label: "อีสาน\u2192ต่างภาค", cost: "ne_other_cost", price: "ne_other_price" },
+        { label: "อีสาน\u2192ในภาค", cost: "ne_within_cost", price: "ne_within_price" },
+      ]},
+    south: { label: "ภาคใต้", color: "#FCE4EC", sizeField: "size_south",
+      subs: [
+        { label: "ใต้\u2192กทม.", cost: "s_bkk_cost", price: "s_bkk_price" },
+        { label: "ใต้\u2192ต่างภาค", cost: "s_other_cost", price: "s_other_price" },
+        { label: "ใต้\u2192ในภาค", cost: "s_within_cost", price: "s_within_price" },
+      ]},
+  };
+
+  const currentZone = ZONE_CONFIG[zoneView];
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>ตารางราคาขนส่ง</h2>
+        <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 2 }}>คลิกที่ตัวเลขเพื่อแก้ไขราคาได้เลย</div>
+      </div>
+
+      {/* Zone tabs */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+        {Object.entries(ZONE_CONFIG).map(([key, cfg]) => (
+          <button key={key} onClick={() => setZoneView(key)} style={{
+            padding: "8px 16px", fontSize: 13, borderRadius: 8, border: "none", cursor: "pointer",
+            fontFamily: font, fontWeight: 500,
+            background: zoneView === key ? colors.primary : cfg.color,
+            color: zoneView === key ? "#fff" : colors.text,
+          }}>{cfg.label}</button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
+      ) : tables.length === 0 ? (
+        <div style={css.card}><div style={{ textAlign: "center", color: colors.textLight, padding: 24, fontSize: 13 }}>ยังไม่มีตารางราคา — รัน SQL ก่อน</div></div>
+      ) : (
+        tables.map((t) => {
+          const isExpanded = expandedTable === t.id;
+          const tableRates = rates[t.id] || [];
+          const cc = carrierColors[t.carrier_code] || { bg: colors.borderLight, text: colors.textMuted };
+
+          return (
+            <div key={t.id} style={{ ...css.card, marginBottom: 10 }}>
+              <div onClick={() => toggleExpand(t.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 14 }}>{isExpanded ? "\u25BE" : "\u25B8"}</span>
+                  <span style={{ background: cc.bg, color: cc.text, fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 6 }}>{t.carrier_code}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>{t.table_name}</span>
+                  <span style={{ fontSize: 11, color: colors.textMuted }}>
+                    {t.table_type !== "normal" ? `(${t.table_type}) ` : ""}| {t.max_weight_kg}kg | COD {t.cod_fee_percent}%
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Badge type={t.is_active ? "success" : "default"}>{t.is_active ? "ใช้งาน" : "ปิด"}</Badge>
+                  <span onClick={(e) => { e.stopPropagation(); handleDeleteTable(t.id); }} style={{ color: colors.danger, cursor: "pointer", fontSize: 11 }}>ลบ</span>
+                </div>
+              </div>
+
+              {isExpanded && (
+                <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${colors.borderLight}` }}>
+                  {tableRates.length === 0 ? (
+                    <div style={{ color: colors.textLight, fontSize: 12, padding: 12, textAlign: "center" }}>ยังไม่มีข้อมูลราคา</div>
+                  ) : (
+                    <div style={{ overflowX: "auto" }}>
+                      <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 600, color: colors.primary, padding: "4px 8px", background: currentZone.color, borderRadius: 6, display: "inline-block" }}>
+                        {currentZone.label}
+                      </div>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: font }}>
+                        <thead>
+                          <tr style={{ background: "#fafafa" }}>
+                            <th style={{ padding: "4px 6px", border: `1px solid ${colors.border}`, fontSize: 10, fontWeight: 600, textAlign: "center" }}>kg</th>
+                            <th style={{ padding: "4px 6px", border: `1px solid ${colors.border}`, fontSize: 10, fontWeight: 600, textAlign: "center" }}>cm</th>
+                            {currentZone.subs.map((sub, si) => (
+                              <th key={si} colSpan={2} style={{ padding: "4px 6px", border: `1px solid ${colors.border}`, fontSize: 10, fontWeight: 600, textAlign: "center", background: currentZone.color }}>
+                                {sub.label}
+                              </th>
+                            ))}
+                          </tr>
+                          <tr style={{ background: "#fafafa" }}>
+                            <th colSpan={2} style={{ border: `1px solid ${colors.border}` }}></th>
+                            {currentZone.subs.map((sub, si) => [
+                              <th key={`${si}-c`} style={{ padding: "2px 4px", border: `1px solid ${colors.border}`, fontSize: 9, color: colors.textMuted }}>ทุน</th>,
+                              <th key={`${si}-p`} style={{ padding: "2px 4px", border: `1px solid ${colors.border}`, fontSize: 9, color: colors.primary, fontWeight: 600 }}>ขาย</th>,
+                            ])}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tableRates.map((r, i) => (
+                            <tr key={r.id} style={{ background: i % 2 === 0 ? "transparent" : "#fafaf8" }}>
+                              <td style={{ padding: "3px 6px", border: `1px solid ${colors.borderLight}`, textAlign: "center", fontWeight: 600, fontSize: 11 }}>{r.weight_kg}</td>
+                              <td style={{ padding: "3px 6px", border: `1px solid ${colors.borderLight}`, textAlign: "center", color: colors.textMuted, fontSize: 10 }}>
+                                {r[currentZone.sizeField] || r.size_bkk || 80}
+                              </td>
+                              {currentZone.subs.map((sub, si) => [
+                                <td key={`${si}-c-${r.id}`} style={{ padding: "1px 2px", border: `1px solid ${colors.borderLight}` }}>
+                                  <EditCell rate={r} field={sub.cost} tableId={t.id} extraStyle={{ color: colors.textMuted }} />
+                                </td>,
+                                <td key={`${si}-p-${r.id}`} style={{ padding: "1px 2px", border: `1px solid ${colors.borderLight}` }}>
+                                  <EditCell rate={r} field={sub.price} tableId={t.id} extraStyle={{ color: colors.primary, fontWeight: 600 }} />
+                                </td>,
+                              ])}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <div style={{ marginTop: 6, fontSize: 10, color: colors.textLight }}>
+                        คลิกตัวเลขเพื่อแก้ไข \u2192 Enter เพื่อบันทึก
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 // ============================================================
 // MAIN APP
 // ============================================================
@@ -1745,6 +1954,7 @@ export default function App() {
     orders: OrdersPage,
     invoices: InvoicesPage,
     expenses: ExpensesPage,
+    pricing: PriceTablesPage,
     cases: CasesPage,
     carriers: CarriersPage,
     activity: ActivityPage,
