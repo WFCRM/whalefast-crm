@@ -609,7 +609,28 @@ function CustomersPage() {
 }
 
 // ============================================================
-// ORDERS PAGE
+// CARRIER IMPORT CONFIGS
+// ============================================================
+const CARRIER_MAPS = {
+  DHL: { label:"DHL", sheet:"ข้อมูลรายละเอียด", cols:{ ship_date:"Pick up date", tracking_no:" Tracking Number", order_no:"CustomerTracking Number", customer_name:"Customer Name", recipient_name:"Consignee Name", destination:"Province", weight_kg:"น้ำหนักที่คิดค่าขนส่ง (Kg)", cod_amount:"COD Amount", shipping_cost:"Total", sell_price:"Total รวม Vat" }},
+  FLASH: { label:"Flash Express", sheet:"Daily report", cols:{ ship_date:"PU time", tracking_no:"Tracking No.", order_no:"Order No.", customer_name:"Sub-account Name", recipient_name:"Consignee", destination:"Consignee address", weight_kg:"Final Weight", cod_amount:"COD Amt", shipping_cost:"TOTAL", sell_price:"Total รวม Vat", status:"Status" }},
+  WEFASTD: { label:"WefastD", sheet:"ข้อมูลรายละเอียด", cols:{ ship_date:"Date", tracking_no:"เลขพัสดุ", order_no:"รหัสอ้างอิง", customer_name:"Customer name", recipient_name:"ผู้รับ", weight_kg:"น้ำหนัก (kg)", shipping_cost:"Grand Total", sell_price:"Grand Total", carrier_sub:"ขนส่ง" }},
+  WFG: { label:"WefastGO", sheet:"วางข้อมูล", cols:{ ship_date:"Date", tracking_no:"เลขพัสดุ", order_no:"รหัสลูกค้า", customer_name:"รหัสลูกค้า", destination:"พื้นที่", weight_kg:"น้ำหนัก(KG.)", cod_amount:"COD", shipping_cost:"ทุน(สุทธิ)", sell_price:"Grand Total", status:"สถานะ", carrier_sub:"ขนส่ง" }},
+};
+
+function parseDate(v) {
+  if (!v) return new Date().toISOString().split("T")[0];
+  if (typeof v === "number") { const d = new Date((v - 25569) * 86400000); return d.toISOString().split("T")[0]; }
+  const s = String(v).trim().replace(/\\t/g,"");
+  if (/^\d{2}\.\d{2}\.\d{4}/.test(s)) { const [d,m,y] = s.split("."); return `${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`; }
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) { const [d,m,y] = s.split("/"); return `${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`; }
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.substring(0,10);
+  try { const d = new Date(s); if (!isNaN(d)) return d.toISOString().split("T")[0]; } catch {}
+  return new Date().toISOString().split("T")[0];
+}
+
+// ============================================================
+// ORDERS PAGE (with Import Excel)
 // ============================================================
 function OrdersPage() {
   const [orders, setOrders] = useState([]);
@@ -617,18 +638,33 @@ function OrdersPage() {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importCarrier, setImportCarrier] = useState("");
+  const [importPreview, setImportPreview] = useState([]);
+  const [importTotal, setImportTotal] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [xlsxLoaded, setXlsxLoaded] = useState(false);
   const [form, setForm] = useState({
     customer_id: "", carrier_id: "", tracking_no: "", order_no: "", recipient_name: "",
     destination: "", weight_kg: "", cod_amount: "0", shipping_cost: "0", sell_price: "0",
   });
   const auth = useAuth();
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); loadXlsx(); }, []);
+
+  const loadXlsx = () => {
+    if (window.XLSX) { setXlsxLoaded(true); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    s.onload = () => setXlsxLoaded(true);
+    document.head.appendChild(s);
+  };
 
   const loadData = async () => {
     const [o, car, cus] = await Promise.all([
-      supabase.from("orders").select("*,customers(company_name),carriers(name)", { order: "created_at.desc" }),
-      supabase.from("carriers").select("id,name"),
+      supabase.from("orders").select("*,customers(company_name),carriers(name)", { order: "created_at.desc", limit: 200 }),
+      supabase.from("carriers").select("id,name,code"),
       supabase.from("customers").select("id,company_name"),
     ]);
     setOrders(Array.isArray(o) ? o : []);
@@ -640,20 +676,106 @@ function OrdersPage() {
   const handleAdd = async () => {
     try {
       await supabase.from("orders").insert({
-        ...form,
-        weight_kg: parseFloat(form.weight_kg) || 0,
-        cod_amount: parseFloat(form.cod_amount) || 0,
-        shipping_cost: parseFloat(form.shipping_cost) || 0,
-        sell_price: parseFloat(form.sell_price) || 0,
-        ship_date: new Date().toISOString().split("T")[0],
-        created_by: auth?.user?.id,
+        ...form, weight_kg: parseFloat(form.weight_kg) || 0,
+        cod_amount: parseFloat(form.cod_amount) || 0, shipping_cost: parseFloat(form.shipping_cost) || 0,
+        sell_price: parseFloat(form.sell_price) || 0, ship_date: new Date().toISOString().split("T")[0], created_by: auth?.user?.id,
       });
       setShowForm(false);
       setForm({ customer_id: "", carrier_id: "", tracking_no: "", order_no: "", recipient_name: "", destination: "", weight_kg: "", cod_amount: "0", shipping_cost: "0", sell_price: "0" });
       loadData();
-    } catch (e) {
-      alert("เกิดข้อผิดพลาด: " + e.message);
+    } catch (e) { alert("เกิดข้อผิดพลาด: " + e.message); }
+  };
+
+  const findCarrierId = (code) => {
+    if (!code) return null;
+    const c = String(code).toUpperCase();
+    const match = carriers.find(cr => {
+      const n = cr.name.toUpperCase(), cd = (cr.code||"").toUpperCase();
+      if (c.includes("DHL") || c === "ISPDHLND") return cd === "DHL";
+      if (c.includes("FLASH") || c === "ISPFLASHD") return cd === "FLASH";
+      if (c.includes("KERRY") || c === "ISPKEX" || c.includes("DPKERRY")) return cd === "KERRY";
+      if (c.includes("JNT") || c.includes("J&T")) return cd === "JNT";
+      if (c.includes("ISPTHPX") || c.includes("ISPTHPZ") || c.includes("ISPBSX") || c.includes("ISPS")) return cd === "WEFASTD";
+      if (c.includes("BEST") || c.includes("DPBEST")) return cd === "KERRY";
+      if (c.includes("SHOPEE") || c.includes("DPSHOPEE")) return cd === "OFFLINE";
+      if (c.includes("THAIPOST") || c.includes("DPTHAIPOST")) return cd === "OFFLINE";
+      return false;
+    });
+    return match?.id || carriers.find(cr => cr.code === "OFFLINE")?.id || null;
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !importCarrier || !window.XLSX) return;
+    setImportResult(null);
+    const config = CARRIER_MAPS[importCarrier];
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = window.XLSX.read(ev.target.result, { type: "array" });
+        let sheetName = config.sheet;
+        if (!wb.SheetNames.includes(sheetName)) sheetName = wb.SheetNames.find(s => s.includes("report") || s.includes("รายละเอียด") || s.includes("วาง")) || wb.SheetNames[0];
+        const ws = wb.Sheets[sheetName];
+        const raw = window.XLSX.utils.sheet_to_json(ws, { defval: "" });
+        const carrierObj = carriers.find(c => c.code === (importCarrier === "FLASH" ? "FLASH" : importCarrier));
+        const carrierId = carrierObj?.id;
+        const mapped = raw.map(row => {
+          const m = config.cols;
+          const getVal = (key) => { const col = m[key]; return col ? (row[col] ?? row[col.trim()] ?? "") : ""; };
+          const subCarrier = getVal("carrier_sub");
+          return {
+            ship_date: parseDate(getVal("ship_date")),
+            tracking_no: String(getVal("tracking_no")).replace(/^'/, "").trim(),
+            order_no: String(getVal("order_no")).replace(/^'|\\t/g, "").trim(),
+            customer_name: String(getVal("customer_name")).trim(),
+            recipient_name: String(getVal("recipient_name")).trim(),
+            destination: String(getVal("destination")).trim().substring(0, 100),
+            weight_kg: parseFloat(getVal("weight_kg")) || 0,
+            cod_amount: parseFloat(getVal("cod_amount")) || 0,
+            shipping_cost: parseFloat(getVal("shipping_cost")) || 0,
+            sell_price: parseFloat(getVal("sell_price")) || 0,
+            carrier_id: subCarrier ? (findCarrierId(subCarrier) || carrierId) : carrierId,
+            status: "pending",
+            source: importCarrier,
+            created_by: auth?.user?.id,
+          };
+        }).filter(r => r.tracking_no && r.tracking_no !== "undefined" && r.tracking_no.length > 3);
+        setImportPreview(mapped.slice(0, 15));
+        setImportTotal(mapped.length);
+        window._importData = mapped;
+      } catch (err) { alert("อ่านไฟล์ไม่สำเร็จ: " + err.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const doImport = async () => {
+    const data = window._importData;
+    if (!data || data.length === 0) return;
+    setImporting(true);
+    let success = 0, errors = 0;
+    const batchSize = 50;
+    for (let i = 0; i < data.length; i += batchSize) {
+      const batch = data.slice(i, i + batchSize).map(r => ({
+        ship_date: r.ship_date, tracking_no: r.tracking_no, order_no: r.order_no,
+        recipient_name: r.recipient_name, destination: r.destination, weight_kg: r.weight_kg,
+        cod_amount: r.cod_amount, shipping_cost: r.shipping_cost, sell_price: r.sell_price,
+        carrier_id: r.carrier_id, status: r.status, source: r.source, created_by: r.created_by,
+        customer_id: null,
+      }));
+      try {
+        await supabase.from("orders").insert(batch);
+        success += batch.length;
+      } catch (e) {
+        for (const row of batch) {
+          try { await supabase.from("orders").insert(row); success++; } catch { errors++; }
+        }
+      }
     }
+    setImportResult({ success, errors, total: data.length });
+    setImporting(false);
+    setImportPreview([]);
+    window._importData = null;
+    loadData();
   };
 
   const statusBadge = (v) => {
@@ -665,18 +787,106 @@ function OrdersPage() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>ออเดอร์</h2>
-        <button onClick={() => setShowForm(!showForm)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 20px", fontSize: 13 }}>
-          + เพิ่มออเดอร์
-        </button>
+        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>ออเดอร์ / นำเข้าข้อมูล</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => { setShowImport(!showImport); setShowForm(false); }} style={{ ...css.btnPrimary, width: "auto", padding: "10px 20px", fontSize: 13, background: colors.accent }}>
+            Import Excel
+          </button>
+          <button onClick={() => { setShowForm(!showForm); setShowImport(false); }} style={{ ...css.btnPrimary, width: "auto", padding: "10px 20px", fontSize: 13 }}>
+            + เพิ่มรายการ
+          </button>
+        </div>
       </div>
+
+      {showImport && (
+        <div style={{ ...css.card, marginBottom: 20, borderLeft: `3px solid ${colors.accent}`, borderRadius: 0 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>Import Excel — นำเข้าข้อมูลจากขนส่ง</h3>
+
+          <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}>
+              <label style={css.label}>เลือกขนส่ง *</label>
+              <select style={css.input} value={importCarrier} onChange={(e) => { setImportCarrier(e.target.value); setImportPreview([]); setImportResult(null); }}>
+                <option value="">-- เลือก --</option>
+                {Object.entries(CARRIER_MAPS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: 2 }}>
+              <label style={css.label}>เลือกไฟล์ Excel (.xlsx)</label>
+              <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} disabled={!importCarrier || !xlsxLoaded}
+                style={{ ...css.input, padding: "9px 12px" }} />
+            </div>
+          </div>
+
+          {!xlsxLoaded && <div style={{ fontSize: 13, color: colors.warning, marginBottom: 8 }}>กำลังโหลด Excel reader...</div>}
+
+          {importCarrier && (
+            <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12, padding: "8px 12px", background: colors.bg, borderRadius: 8 }}>
+              จะอ่านจาก Sheet: <strong>{CARRIER_MAPS[importCarrier].sheet}</strong> | Columns ที่ map: tracking, น้ำหนัก, COD, ราคาขาย, ต้นทุน
+            </div>
+          )}
+
+          {importPreview.length > 0 && (
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>Preview ({importPreview.length} จาก {importTotal} รายการ)</div>
+                <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
+                  <span>รวมยอดขาย: <strong style={{color:colors.primary}}>฿{importPreview.reduce((s,r) => s + (r.sell_price||0), 0).toLocaleString()}</strong></span>
+                  <span>COD: <strong>฿{importPreview.reduce((s,r) => s + (r.cod_amount||0), 0).toLocaleString()}</strong></span>
+                </div>
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 300, overflowY: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ position: "sticky", top: 0, background: colors.card }}>
+                      {["วันที่","Tracking","ลค.","ผู้รับ","น้ำหนัก","COD","ต้นทุน","ราคาขาย"].map(h =>
+                        <th key={h} style={{ textAlign: "left", padding: "6px 8px", borderBottom: `1px solid ${colors.border}`, fontSize: 11, fontWeight: 600, color: colors.textMuted }}>{h}</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.map((r, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{r.ship_date}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}`, fontFamily: "monospace", fontSize: 11 }}>{r.tracking_no}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{r.customer_name?.substring(0,20)}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{r.recipient_name?.substring(0,15)}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{r.weight_kg}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>฿{r.cod_amount.toLocaleString()}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>฿{r.shipping_cost.toLocaleString()}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}`, fontWeight: 600 }}>฿{r.sell_price.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                <button onClick={doImport} disabled={importing} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.accent, opacity: importing ? 0.6 : 1 }}>
+                  {importing ? `กำลัง Import... ` : `Import ${importTotal} รายการ`}
+                </button>
+                <button onClick={() => { setImportPreview([]); window._importData = null; }} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.border, color: colors.text }}>
+                  ยกเลิก
+                </button>
+              </div>
+            </div>
+          )}
+
+          {importResult && (
+            <div style={{ marginTop: 12, padding: "12px 16px", borderRadius: 8, background: importResult.errors > 0 ? colors.warningLight : colors.primaryLight }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: importResult.errors > 0 ? colors.warning : colors.primary }}>
+                Import เสร็จสิ้น: สำเร็จ {importResult.success} / {importResult.total} รายการ
+                {importResult.errors > 0 && ` (error ${importResult.errors})`}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {showForm && (
         <div style={{ ...css.card, marginBottom: 20 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>เพิ่มออเดอร์ใหม่</h3>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>เพิ่มออเดอร์ใหม่ (กรอกเอง)</h3>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
-              <label style={css.label}>ลูกค้า *</label>
+              <label style={css.label}>ลูกค้า</label>
               <select style={css.input} value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })}>
                 <option value="">เลือกลูกค้า</option>
                 {customers.map((c) => <option key={c.id} value={c.id}>{c.company_name}</option>)}
@@ -713,6 +923,9 @@ function OrdersPage() {
       )}
 
       <div style={css.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>รายการออเดอร์ ({orders.length})</div>
+        </div>
         {loading ? (
           <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
         ) : (
@@ -720,12 +933,13 @@ function OrdersPage() {
             columns={[
               { key: "ship_date", label: "วันที่" },
               { key: "tracking_no", label: "Tracking" },
-              { key: "customers", label: "ลูกค้า", render: (v) => v?.company_name || "-" },
               { key: "carriers", label: "ขนส่ง", render: (v) => v?.name || "-" },
+              { key: "recipient_name", label: "ผู้รับ" },
               { key: "weight_kg", label: "น้ำหนัก" },
               { key: "cod_amount", label: "COD", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
               { key: "sell_price", label: "ราคาขาย", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
               { key: "status", label: "สถานะ", render: statusBadge },
+              { key: "source", label: "แหล่ง", render: (v) => v ? <Badge type="info">{v}</Badge> : "-" },
             ]}
             data={orders}
           />
