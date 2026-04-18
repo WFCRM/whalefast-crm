@@ -49,6 +49,19 @@ const supabase = {
         if (!res.ok) return [];
         return res.json();
       },
+      selectWithCount: async (columns = "*", params = {}) => {
+        let url = `${SUPABASE_URL}/rest/v1/${table}?select=${columns}`;
+        Object.entries(params).forEach(([k, v]) => {
+          url += `&${k}=${v}`;
+        });
+        const headers = { ...supabaseHeaders(token), Prefer: "count=exact" };
+        const res = await fetch(url, { headers });
+        if (!res.ok) return { data: [], count: 0 };
+        const contentRange = res.headers.get("content-range");
+        const count = contentRange ? parseInt(contentRange.split("/")[1]) || 0 : 0;
+        const data = await res.json();
+        return { data, count };
+      },
       insert: async (rows) => {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
           method: "POST",
@@ -91,6 +104,7 @@ const supabase = {
       headers: supabaseHeaders(token),
       body: JSON.stringify(params),
     });
+    if (!res.ok) throw new Error(`RPC ${fn} failed: ${res.status}`);
     return res.json();
   },
 };
@@ -440,83 +454,236 @@ function Sidebar({ user, currentPage, onNavigate, onLogout }) {
 }
 
 // ============================================================
-// DASHBOARD PAGE
+// DASHBOARD PAGE — FIXED: uses RPC + fallback batch aggregation
 // ============================================================
 function DashboardPage() {
-  const [stats, setStats] = useState({ orders: 0, sales: 0, customers: 0, carriers: 0 });
+  const [stats, setStats] = useState({ orders: 0, sales: 0, cod: 0, shippingCost: 0, customers: 0, carriers: 0 });
+  const [byCarrier, setByCarrier] = useState({});
+  const [bySource, setBySource] = useState({});
   const [recentOrders, setRecentOrders] = useState([]);
-  const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dateRange, setDateRange] = useState("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
 
-  useEffect(() => {
-    loadDashboard();
-  }, []);
+  const getDateRange = useCallback(() => {
+    const today = new Date();
+    const fmt = (d) => d.toISOString().split("T")[0];
+    switch (dateRange) {
+      case "today": return { start: fmt(today), end: fmt(today) };
+      case "7d": { const d = new Date(today); d.setDate(d.getDate() - 7); return { start: fmt(d), end: fmt(today) }; }
+      case "30d": { const d = new Date(today); d.setDate(d.getDate() - 30); return { start: fmt(d), end: fmt(today) }; }
+      case "month": { const s = new Date(today.getFullYear(), today.getMonth(), 1); return { start: fmt(s), end: fmt(today) }; }
+      case "custom": return { start: customStart || null, end: customEnd || null };
+      default: return { start: null, end: null };
+    }
+  }, [dateRange, customStart, customEnd]);
 
-  const loadDashboard = async () => {
+  const loadDashboard = useCallback(async () => {
+    setLoading(true);
     try {
-      const [orders, customers, carriers, activity] = await Promise.all([
-        supabase.from("orders").select("id,sell_price,ship_date,status,customer_id", { order: "ship_date.desc", limit: 10 }),
-        supabase.from("customers").select("id"),
-        supabase.from("carriers").select("id,name"),
-        supabase.from("activity_log").select("id,action,description,created_at,user_id", { order: "created_at.desc", limit: 5 }),
-      ]);
+      const { start, end } = getDateRange();
 
-      const totalSales = Array.isArray(orders) ? orders.reduce((sum, o) => sum + (parseFloat(o.sell_price) || 0), 0) : 0;
+      // Try RPC first
+      let summary = null;
+      try {
+        summary = await supabase.rpc("get_dashboard_summary", { p_start_date: start, p_end_date: end });
+      } catch (e) {
+        console.log("RPC not available, using fallback:", e.message);
+      }
 
-      setStats({
-        orders: Array.isArray(orders) ? orders.length : 0,
-        sales: totalSales,
-        customers: Array.isArray(customers) ? customers.length : 0,
-        carriers: Array.isArray(carriers) ? carriers.length : 0,
-      });
-      setRecentOrders(Array.isArray(orders) ? orders.slice(0, 5) : []);
-      setActivities(Array.isArray(activity) ? activity : []);
+      if (summary && summary.total_orders !== undefined) {
+        // RPC worked
+        const [customers, carriers, recentO] = await Promise.all([
+          supabase.from("customers").select("id"),
+          supabase.from("carriers").select("id,name"),
+          supabase.from("orders").select("id,sell_price,ship_date,status,tracking_no,source", { order: "ship_date.desc", limit: 8 }),
+        ]);
+
+        setStats({
+          orders: summary.total_orders || 0,
+          sales: parseFloat(summary.total_revenue) || 0,
+          cod: parseFloat(summary.total_cod) || 0,
+          shippingCost: parseFloat(summary.total_shipping_fee) || 0,
+          customers: Array.isArray(customers) ? customers.length : 0,
+          carriers: Array.isArray(carriers) ? carriers.length : 0,
+        });
+        setByCarrier(summary.orders_by_carrier || {});
+        setBySource(summary.orders_by_account || {});
+        setRecentOrders(Array.isArray(recentO) ? recentO.slice(0, 8) : []);
+      } else {
+        // Fallback: batch fetch all orders and aggregate client-side
+        await loadFallback(start, end);
+      }
     } catch (e) {
       console.error("Dashboard load error:", e);
+      // Try fallback
+      try { await loadFallback(null, null); } catch (e2) { console.error("Fallback also failed:", e2); }
     }
     setLoading(false);
+  }, [getDateRange]);
+
+  const loadFallback = async (start, end) => {
+    // Fetch ALL orders in batches of 1000
+    const allOrders = [];
+    let offset = 0;
+    const batchSize = 1000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const params = { order: "ship_date.desc", limit: batchSize, offset };
+      if (start) params["ship_date"] = `gte.${start}`;
+      if (end) params["ship_date"] = end ? `lte.${end}` : undefined;
+
+      // Build URL manually for date range
+      let url = `${SUPABASE_URL}/rest/v1/orders?select=sell_price,cod_amount,shipping_cost,ship_date,status,source,tracking_no&order=ship_date.desc&limit=${batchSize}&offset=${offset}`;
+      if (start) url += `&ship_date=gte.${start}`;
+      if (end) url += `&ship_date=lte.${end}`;
+
+      const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+      const token = session?.access_token;
+      const res = await fetch(url, { headers: supabaseHeaders(token) });
+      const data = await res.json();
+
+      if (!Array.isArray(data) || data.length === 0) { hasMore = false; break; }
+      allOrders.push(...data);
+      if (data.length < batchSize) hasMore = false;
+      else offset += batchSize;
+      if (allOrders.length >= 50000) break;
+    }
+
+    const [customers, carriers] = await Promise.all([
+      supabase.from("customers").select("id"),
+      supabase.from("carriers").select("id,name"),
+    ]);
+
+    // Aggregate
+    const totalSales = allOrders.reduce((s, o) => s + (parseFloat(o.sell_price) || 0), 0);
+    const totalCod = allOrders.reduce((s, o) => s + (parseFloat(o.cod_amount) || 0), 0);
+    const totalShipping = allOrders.reduce((s, o) => s + (parseFloat(o.shipping_cost) || 0), 0);
+
+    // Group by source
+    const srcMap = {};
+    const statusMap = {};
+    allOrders.forEach(o => {
+      const src = o.source || "manual";
+      srcMap[src] = (srcMap[src] || 0) + 1;
+      const st = o.status || "unknown";
+      statusMap[st] = (statusMap[st] || 0) + 1;
+    });
+
+    setStats({
+      orders: allOrders.length,
+      sales: totalSales,
+      cod: totalCod,
+      shippingCost: totalShipping,
+      customers: Array.isArray(customers) ? customers.length : 0,
+      carriers: Array.isArray(carriers) ? carriers.length : 0,
+    });
+    setByCarrier(statusMap);
+    setBySource(srcMap);
+    setRecentOrders(allOrders.slice(0, 8));
   };
 
-  if (loading) return <div style={{ padding: 40, textAlign: "center", color: colors.textMuted }}>กำลังโหลด...</div>;
+  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+
+  const fmtMoney = (n) => `\u0E3F${(n || 0).toLocaleString("th-TH", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+  // Simple bar chart
+  const BarChart = ({ data, title }) => {
+    if (!data || Object.keys(data).length === 0) return null;
+    const entries = Object.entries(data).sort((a, b) => b[1] - a[1]);
+    const maxVal = Math.max(...entries.map(([, v]) => v));
+    const barColors = ["#1a6b4f", "#e8913a", "#2980b9", "#8e44ad", "#c0392b", "#27ae60", "#f39c12", "#95a5a6"];
+    return (
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: colors.textMuted }}>{title}</div>
+        {entries.map(([label, count], i) => (
+          <div key={label} style={{ marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+              <span>{label}</span>
+              <span style={{ fontWeight: 600 }}>{count.toLocaleString()}</span>
+            </div>
+            <div style={{ width: "100%", background: colors.borderLight, borderRadius: 4, height: 8 }}>
+              <div style={{ width: `${(count / maxVal) * 100}%`, background: barColors[i % barColors.length], borderRadius: 4, height: 8, transition: "width 0.5s" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  if (loading) return <div style={{ padding: 40, textAlign: "center", color: colors.textMuted }}>กำลังโหลด Dashboard...</div>;
 
   return (
     <div>
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>Dashboard</h2>
-      <div style={css.metricGrid}>
-        <MetricCard label="ออเดอร์ทั้งหมด" value={stats.orders.toLocaleString()} sub={stats.orders === 0 ? "ยังไม่มีข้อมูล" : null} />
-        <MetricCard label="ยอดขายรวม" value={`฿${stats.sales.toLocaleString()}`} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 8 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>Dashboard</h2>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[
+            { val: "today", label: "วันนี้" },
+            { val: "7d", label: "7 วัน" },
+            { val: "30d", label: "30 วัน" },
+            { val: "month", label: "เดือนนี้" },
+            { val: "all", label: "ทั้งหมด" },
+            { val: "custom", label: "กำหนดเอง" },
+          ].map(opt => (
+            <button
+              key={opt.val}
+              onClick={() => setDateRange(opt.val)}
+              style={{
+                padding: "6px 14px", fontSize: 12, borderRadius: 8, border: "none", cursor: "pointer",
+                fontFamily: font, fontWeight: 500, transition: "all 0.15s",
+                background: dateRange === opt.val ? colors.primary : colors.borderLight,
+                color: dateRange === opt.val ? "#fff" : colors.text,
+              }}
+            >{opt.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {dateRange === "custom" && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
+          <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} style={{ ...css.input, width: 160, padding: "6px 10px", fontSize: 12 }} />
+          <span style={{ color: colors.textMuted, fontSize: 13 }}>ถึง</span>
+          <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} style={{ ...css.input, width: 160, padding: "6px 10px", fontSize: 12 }} />
+          <button onClick={loadDashboard} style={{ ...css.btnPrimary, width: "auto", padding: "6px 16px", fontSize: 12 }}>ค้นหา</button>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 14, marginBottom: 20 }}>
+        <MetricCard label="ออเดอร์ทั้งหมด" value={stats.orders.toLocaleString()} />
+        <MetricCard label="ยอดขายรวม" value={fmtMoney(stats.sales)} />
+        <MetricCard label="ยอด COD" value={fmtMoney(stats.cod)} />
+        <MetricCard label="ต้นทุนขนส่ง" value={fmtMoney(stats.shippingCost)} />
+        <MetricCard label="กำไรขนส่ง" value={fmtMoney(stats.sales - stats.shippingCost)} sub={stats.sales > 0 ? `${((stats.sales - stats.shippingCost) / stats.sales * 100).toFixed(1)}%` : null} subType="up" />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14, marginBottom: 20 }}>
         <MetricCard label="ลูกค้า" value={stats.customers.toLocaleString()} />
-        <MetricCard label="ขนส่ง" value={stats.carriers.toLocaleString()} sub="เจ้า" />
+        <MetricCard label="ขนส่ง" value={`${stats.carriers} เจ้า`} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div style={css.card}>
-          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>ออเดอร์ล่าสุด</h3>
+          <BarChart data={bySource} title="ตามแหล่งข้อมูล (Source)" />
+          {Object.keys(bySource).length === 0 && <div style={{ color: colors.textLight, fontSize: 13, textAlign: "center", padding: 16 }}>ยังไม่มีข้อมูล</div>}
+        </div>
+        <div style={css.card}>
+          <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: colors.textMuted }}>ออเดอร์ล่าสุด</h3>
           {recentOrders.length === 0 ? (
-            <div style={{ color: colors.textLight, fontSize: 13, padding: 16, textAlign: "center" }}>ยังไม่มีออเดอร์ — เพิ่มออเดอร์แรกได้ที่เมนู "ออเดอร์"</div>
+            <div style={{ color: colors.textLight, fontSize: 13, padding: 16, textAlign: "center" }}>ยังไม่มีออเดอร์</div>
           ) : (
             <DataTable
               columns={[
                 { key: "ship_date", label: "วันที่" },
-                { key: "sell_price", label: "ยอด", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+                { key: "tracking_no", label: "Tracking", render: (v) => <span style={{ fontFamily: "monospace", fontSize: 11 }}>{v || "-"}</span> },
+                { key: "sell_price", label: "ยอด", render: (v) => fmtMoney(parseFloat(v || 0)) },
                 { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "delivered" ? "success" : v === "disputed" ? "danger" : "warning"}>{v}</Badge> },
+                { key: "source", label: "แหล่ง", render: (v) => v ? <Badge type="info">{v}</Badge> : "-" },
               ]}
               data={recentOrders}
             />
-          )}
-        </div>
-
-        <div style={css.card}>
-          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>กิจกรรมล่าสุด</h3>
-          {activities.length === 0 ? (
-            <div style={{ color: colors.textLight, fontSize: 13, padding: 16, textAlign: "center" }}>ยังไม่มีกิจกรรม — เมื่อเริ่มใช้งานระบบ กิจกรรมจะแสดงที่นี่</div>
-          ) : (
-            activities.map((a) => (
-              <div key={a.id} style={{ padding: "8px 0", borderBottom: `1px solid ${colors.borderLight}`, fontSize: 13 }}>
-                <div>{a.description || a.action}</div>
-                <div style={{ fontSize: 11, color: colors.textLight, marginTop: 2 }}>{new Date(a.created_at).toLocaleString("th-TH")}</div>
-              </div>
-            ))
           )}
         </div>
       </div>
@@ -630,10 +797,11 @@ function parseDate(v) {
 }
 
 // ============================================================
-// ORDERS PAGE (with Import Excel)
+// ORDERS PAGE — FIXED: pagination, search, proper count
 // ============================================================
 function OrdersPage() {
   const [orders, setOrders] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [carriers, setCarriers] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -645,15 +813,28 @@ function OrdersPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [xlsxLoaded, setXlsxLoaded] = useState(false);
+
+  // Pagination
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
+
+  // Filters
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const [dateFilter, setDateFilter] = useState("");
-  const [periodFilter, setPeriodFilter] = useState("all");
+  const [dateEnd, setDateEnd] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+
+  const [exporting, setExporting] = useState(false);
+
   const [form, setForm] = useState({
     customer_id: "", carrier_id: "", tracking_no: "", order_no: "", recipient_name: "",
     destination: "", weight_kg: "", cod_amount: "0", shipping_cost: "0", sell_price: "0",
   });
   const auth = useAuth();
 
-  useEffect(() => { loadData(); loadXlsx(); }, []);
+  useEffect(() => { loadCarriersAndCustomers(); loadXlsx(); }, []);
 
   const loadXlsx = () => {
     if (window.XLSX) { setXlsxLoaded(true); return; }
@@ -663,17 +844,60 @@ function OrdersPage() {
     document.head.appendChild(s);
   };
 
-  const loadData = async () => {
-    const [o, car, cus] = await Promise.all([
-      supabase.from("orders").select("*,customers(company_name),carriers(name)", { order: "created_at.desc", limit: 200 }),
+  const loadCarriersAndCustomers = async () => {
+    const [car, cus] = await Promise.all([
       supabase.from("carriers").select("id,name,code"),
       supabase.from("customers").select("id,company_name"),
     ]);
-    setOrders(Array.isArray(o) ? o : []);
     setCarriers(Array.isArray(car) ? car : []);
     setCustomers(Array.isArray(cus) ? cus : []);
-    setLoading(false);
   };
+
+  // Load orders with pagination and filters
+  const loadOrders = useCallback(async () => {
+    setLoading(true);
+    const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+    const token = session?.access_token;
+
+    let url = `${SUPABASE_URL}/rest/v1/orders?select=*,customers(company_name),carriers(name)`;
+
+    // Filters
+    if (search) {
+      url += `&or=(tracking_no.ilike.*${search}*,recipient_name.ilike.*${search}*,order_no.ilike.*${search}*)`;
+    }
+    if (dateFilter) url += `&ship_date=gte.${dateFilter}`;
+    if (dateEnd) url += `&ship_date=lte.${dateEnd}`;
+    if (sourceFilter) url += `&source=eq.${sourceFilter}`;
+    if (statusFilter) url += `&status=eq.${statusFilter}`;
+
+    // Sort and pagination
+    url += `&order=ship_date.desc,created_at.desc`;
+    url += `&limit=${pageSize}&offset=${page * pageSize}`;
+
+    const headers = { ...supabaseHeaders(token), Prefer: "count=exact" };
+    try {
+      const res = await fetch(url, { headers });
+      const contentRange = res.headers.get("content-range");
+      const count = contentRange ? parseInt(contentRange.split("/")[1]) || 0 : 0;
+      const data = await res.json();
+      setOrders(Array.isArray(data) ? data : []);
+      setTotalCount(count);
+    } catch (e) {
+      console.error("Load orders error:", e);
+      setOrders([]);
+      setTotalCount(0);
+    }
+    setLoading(false);
+  }, [page, pageSize, search, dateFilter, dateEnd, sourceFilter, statusFilter]);
+
+  useEffect(() => { loadOrders(); }, [loadOrders]);
+
+  // Reset page when filters change
+  useEffect(() => { setPage(0); }, [search, dateFilter, dateEnd, sourceFilter, statusFilter, pageSize]);
+
+  const totalPages = Math.ceil(totalCount / pageSize);
+  const showFrom = totalCount > 0 ? page * pageSize + 1 : 0;
+  const showTo = Math.min((page + 1) * pageSize, totalCount);
 
   const handleAdd = async () => {
     try {
@@ -684,7 +908,7 @@ function OrdersPage() {
       });
       setShowForm(false);
       setForm({ customer_id: "", carrier_id: "", tracking_no: "", order_no: "", recipient_name: "", destination: "", weight_kg: "", cod_amount: "0", shipping_cost: "0", sell_price: "0" });
-      loadData();
+      loadOrders();
     } catch (e) { alert("เกิดข้อผิดพลาด: " + e.message); }
   };
 
@@ -692,7 +916,7 @@ function OrdersPage() {
     if (!code) return null;
     const c = String(code).toUpperCase();
     const match = carriers.find(cr => {
-      const n = cr.name.toUpperCase(), cd = (cr.code||"").toUpperCase();
+      const cd = (cr.code||"").toUpperCase();
       if (c.includes("DHL") || c === "ISPDHLND") return cd === "DHL";
       if (c.includes("FLASH") || c === "ISPFLASHD") return cd === "FLASH";
       if (c.includes("KERRY") || c === "ISPKEX" || c.includes("DPKERRY")) return cd === "KERRY";
@@ -777,29 +1001,79 @@ function OrdersPage() {
     setImporting(false);
     setImportPreview([]);
     window._importData = null;
-    loadData();
+    loadOrders();
   };
 
-  const filteredOrders = orders.filter(o => {
-    if (periodFilter === "all" && !dateFilter) return true;
-    const d = dateFilter || new Date().toISOString().split("T")[0];
-    const od = o.ship_date;
-    if (!od) return false;
-    if (periodFilter === "day") return od === d;
-    if (periodFilter === "week") {
-      const target = new Date(d), orderDate = new Date(od);
-      const diff = Math.abs(target - orderDate) / 86400000;
-      return diff < 7 && orderDate <= target;
+  // Export all matching orders
+  const handleExport = async () => {
+    if (!window.XLSX) return alert("กำลังโหลด Excel library...");
+    setExporting(true);
+    try {
+      const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+      const token = session?.access_token;
+      const allOrders = [];
+      let offset = 0;
+      const batchSize = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        let url = `${SUPABASE_URL}/rest/v1/orders?select=*,carriers(name)`;
+        if (search) url += `&or=(tracking_no.ilike.*${search}*,recipient_name.ilike.*${search}*,order_no.ilike.*${search}*)`;
+        if (dateFilter) url += `&ship_date=gte.${dateFilter}`;
+        if (dateEnd) url += `&ship_date=lte.${dateEnd}`;
+        if (sourceFilter) url += `&source=eq.${sourceFilter}`;
+        if (statusFilter) url += `&status=eq.${statusFilter}`;
+        url += `&order=ship_date.desc&limit=${batchSize}&offset=${offset}`;
+
+        const res = await fetch(url, { headers: supabaseHeaders(token) });
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) { hasMore = false; break; }
+        allOrders.push(...data);
+        if (data.length < batchSize) hasMore = false;
+        else offset += batchSize;
+        if (allOrders.length >= 10000) break;
+      }
+
+      const exportData = allOrders.map(o => ({
+        "วันที่": o.ship_date, "Tracking": o.tracking_no, "Order No.": o.order_no,
+        "ขนส่ง": o.carriers?.name || "", "ผู้รับ": o.recipient_name, "ปลายทาง": o.destination,
+        "น้ำหนัก": o.weight_kg, "COD": o.cod_amount, "ต้นทุน": o.shipping_cost, "ราคาขาย": o.sell_price,
+        "สถานะ": o.status, "แหล่ง": o.source,
+      }));
+      const ws = window.XLSX.utils.json_to_sheet(exportData);
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, "Orders");
+      window.XLSX.writeFile(wb, `orders_export_${new Date().toISOString().split("T")[0]}.xlsx`);
+    } catch (e) {
+      alert("Export ไม่สำเร็จ: " + e.message);
     }
-    if (periodFilter === "month") return od?.substring(0, 7) === d?.substring(0, 7);
-    if (dateFilter && periodFilter === "all") return od === dateFilter;
-    return true;
-  });
+    setExporting(false);
+  };
 
   const statusBadge = (v) => {
     const m = { pending: "warning", processing: "info", delivered: "success", returned: "danger", disputed: "danger", cancelled: "default" };
     const labels = { pending: "รอดำเนินการ", processing: "กำลังจัดส่ง", delivered: "สำเร็จ", returned: "ตีกลับ", disputed: "แย้งบิล", cancelled: "ยกเลิก" };
     return <Badge type={m[v] || "default"}>{labels[v] || v}</Badge>;
+  };
+
+  // Page number buttons
+  const pageButtons = () => {
+    const btns = [];
+    const maxShow = 7;
+    let startP = Math.max(0, page - Math.floor(maxShow / 2));
+    let endP = Math.min(totalPages - 1, startP + maxShow - 1);
+    if (endP - startP < maxShow - 1) startP = Math.max(0, endP - maxShow + 1);
+    for (let i = startP; i <= endP; i++) {
+      btns.push(
+        <button key={i} onClick={() => setPage(i)} style={{
+          padding: "4px 10px", fontSize: 12, borderRadius: 6, border: "none", cursor: "pointer",
+          fontFamily: font, fontWeight: i === page ? 700 : 400,
+          background: i === page ? colors.primary : colors.borderLight,
+          color: i === page ? "#fff" : colors.text,
+        }}>{i + 1}</button>
+      );
+    }
+    return btns;
   };
 
   return (
@@ -816,10 +1090,10 @@ function OrdersPage() {
         </div>
       </div>
 
+      {/* IMPORT SECTION */}
       {showImport && (
         <div style={{ ...css.card, marginBottom: 20, borderLeft: `3px solid ${colors.accent}`, borderRadius: 0 }}>
           <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>Import Excel — นำเข้าข้อมูลจากขนส่ง</h3>
-
           <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-end" }}>
             <div style={{ flex: 1 }}>
               <label style={css.label}>เลือกขนส่ง *</label>
@@ -834,22 +1108,19 @@ function OrdersPage() {
                 style={{ ...css.input, padding: "9px 12px" }} />
             </div>
           </div>
-
           {!xlsxLoaded && <div style={{ fontSize: 13, color: colors.warning, marginBottom: 8 }}>กำลังโหลด Excel reader...</div>}
-
           {importCarrier && (
             <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12, padding: "8px 12px", background: colors.bg, borderRadius: 8 }}>
               จะอ่านจาก Sheet: <strong>{CARRIER_MAPS[importCarrier].sheet}</strong> | Columns ที่ map: tracking, น้ำหนัก, COD, ราคาขาย, ต้นทุน
             </div>
           )}
-
           {importPreview.length > 0 && (
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ fontSize: 14, fontWeight: 600 }}>Preview ({importPreview.length} จาก {importTotal} รายการ)</div>
                 <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
-                  <span>รวมยอดขาย: <strong style={{color:colors.primary}}>฿{importPreview.reduce((s,r) => s + (r.sell_price||0), 0).toLocaleString()}</strong></span>
-                  <span>COD: <strong>฿{importPreview.reduce((s,r) => s + (r.cod_amount||0), 0).toLocaleString()}</strong></span>
+                  <span>รวมยอดขาย: <strong style={{color:colors.primary}}>{"\u0E3F"}{importPreview.reduce((s,r) => s + (r.sell_price||0), 0).toLocaleString()}</strong></span>
+                  <span>COD: <strong>{"\u0E3F"}{importPreview.reduce((s,r) => s + (r.cod_amount||0), 0).toLocaleString()}</strong></span>
                 </div>
               </div>
               <div style={{ overflowX: "auto", maxHeight: 300, overflowY: "auto" }}>
@@ -869,9 +1140,9 @@ function OrdersPage() {
                         <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{r.customer_name?.substring(0,20)}</td>
                         <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{r.recipient_name?.substring(0,15)}</td>
                         <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{r.weight_kg}</td>
-                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>฿{r.cod_amount.toLocaleString()}</td>
-                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>฿{r.shipping_cost.toLocaleString()}</td>
-                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}`, fontWeight: 600 }}>฿{r.sell_price.toLocaleString()}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{"\u0E3F"}{r.cod_amount.toLocaleString()}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}` }}>{"\u0E3F"}{r.shipping_cost.toLocaleString()}</td>
+                        <td style={{ padding: "5px 8px", borderBottom: `1px solid ${colors.borderLight}`, fontWeight: 600 }}>{"\u0E3F"}{r.sell_price.toLocaleString()}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -879,7 +1150,7 @@ function OrdersPage() {
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
                 <button onClick={doImport} disabled={importing} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.accent, opacity: importing ? 0.6 : 1 }}>
-                  {importing ? `กำลัง Import... ` : `Import ${importTotal} รายการ`}
+                  {importing ? "กำลัง Import..." : `Import ${importTotal} รายการ`}
                 </button>
                 <button onClick={() => { setImportPreview([]); window._importData = null; }} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.border, color: colors.text }}>
                   ยกเลิก
@@ -887,7 +1158,6 @@ function OrdersPage() {
               </div>
             </div>
           )}
-
           {importResult && (
             <div style={{ marginTop: 12, padding: "12px 16px", borderRadius: 8, background: importResult.errors > 0 ? colors.warningLight : colors.primaryLight }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: importResult.errors > 0 ? colors.warning : colors.primary }}>
@@ -899,6 +1169,7 @@ function OrdersPage() {
         </div>
       )}
 
+      {/* ADD FORM */}
       {showForm && (
         <div style={{ ...css.card, marginBottom: 20 }}>
           <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>เพิ่มออเดอร์ใหม่ (กรอกเอง)</h3>
@@ -940,55 +1211,106 @@ function OrdersPage() {
         </div>
       )}
 
+      {/* FILTERS & SEARCH */}
+      <div style={{ ...css.card, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr auto auto", gap: 10, alignItems: "flex-end" }}>
+          <div>
+            <label style={css.label}>ค้นหา (Tracking / ชื่อ / Order No.)</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                style={{ ...css.input, padding: "8px 12px", fontSize: 13 }}
+                placeholder="พิมพ์แล้วกด Enter..."
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") setSearch(searchInput); }}
+              />
+              <button onClick={() => setSearch(searchInput)} style={{ ...css.btnPrimary, width: "auto", padding: "8px 14px", fontSize: 12 }}>ค้นหา</button>
+            </div>
+          </div>
+          <div>
+            <label style={css.label}>วันที่เริ่ม</label>
+            <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} style={{ ...css.input, padding: "8px 10px", fontSize: 12 }} />
+          </div>
+          <div>
+            <label style={css.label}>วันที่สิ้นสุด</label>
+            <input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} style={{ ...css.input, padding: "8px 10px", fontSize: 12 }} />
+          </div>
+          <div>
+            <label style={css.label}>แหล่ง</label>
+            <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} style={{ ...css.input, padding: "8px 10px", fontSize: 12 }}>
+              <option value="">ทั้งหมด</option>
+              <option value="FLASH">Flash</option>
+              <option value="DHL">DHL</option>
+              <option value="WEFASTD">WefastD</option>
+              <option value="WFG">WefastGO</option>
+            </select>
+          </div>
+          <div>
+            <label style={css.label}>สถานะ</label>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...css.input, padding: "8px 10px", fontSize: 12 }}>
+              <option value="">ทั้งหมด</option>
+              <option value="pending">รอดำเนินการ</option>
+              <option value="processing">กำลังจัดส่ง</option>
+              <option value="delivered">สำเร็จ</option>
+              <option value="returned">ตีกลับ</option>
+              <option value="cancelled">ยกเลิก</option>
+            </select>
+          </div>
+          <div>
+            <label style={css.label}>แสดง</label>
+            <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} style={{ ...css.input, padding: "8px 10px", fontSize: 12, width: 80 }}>
+              {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }}>
+            <button onClick={() => { setSearch(""); setSearchInput(""); setDateFilter(""); setDateEnd(""); setSourceFilter(""); setStatusFilter(""); setPage(0); }}
+              style={{ padding: "8px 12px", fontSize: 12, borderRadius: 8, border: "none", cursor: "pointer", background: colors.borderLight, color: colors.text, fontFamily: font }}>
+              ล้าง
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ORDERS TABLE */}
       <div style={css.card}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>รายการออเดอร์ ({filteredOrders.length})</div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} style={{ ...css.input, width: 160, padding: "6px 10px", fontSize: 12 }} />
-            <select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)} style={{ ...css.input, width: 120, padding: "6px 10px", fontSize: 12 }}>
-              <option value="all">ทั้งหมด</option>
-              <option value="day">รายวัน</option>
-              <option value="week">รายสัปดาห์</option>
-              <option value="month">รายเดือน</option>
-            </select>
-            {filteredOrders.length > 0 && (
-              <button onClick={() => {
-                if (!window.XLSX) return alert("กำลังโหลด Excel library...");
-                const exportData = filteredOrders.map(o => ({
-                  "วันที่": o.ship_date, "Tracking": o.tracking_no, "ขนส่ง": o.carriers?.name || "", "ผู้รับ": o.recipient_name,
-                  "น้ำหนัก": o.weight_kg, "COD": o.cod_amount, "ต้นทุน": o.shipping_cost, "ราคาขาย": o.sell_price, "สถานะ": o.status, "แหล่ง": o.source
-                }));
-                const ws = window.XLSX.utils.json_to_sheet(exportData);
-                const wb = window.XLSX.utils.book_new();
-                window.XLSX.utils.book_append_sheet(wb, ws, "Orders");
-                window.XLSX.writeFile(wb, `orders_${dateFilter || "all"}.xlsx`);
-              }} style={{ ...css.btnPrimary, width: "auto", padding: "6px 14px", fontSize: 12, background: colors.primary }}>
-                Export Excel
-              </button>
-            )}
-            {orders.length > 0 && (
+          <div style={{ fontSize: 14, fontWeight: 600 }}>
+            รายการออเดอร์ ({totalCount.toLocaleString()} รายการ)
+            {search && <span style={{ fontWeight: 400, color: colors.textMuted }}> — ค้นหา "{search}"</span>}
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button onClick={handleExport} disabled={exporting || totalCount === 0}
+              style={{ ...css.btnPrimary, width: "auto", padding: "6px 14px", fontSize: 12, background: colors.primary, opacity: exporting ? 0.6 : 1 }}>
+              {exporting ? "กำลัง Export..." : `Export Excel (${totalCount.toLocaleString()})`}
+            </button>
+            {totalCount > 0 && (
               <button onClick={async () => {
-                if (!confirm(`ต้องการลบออเดอร์ทั้งหมด ${orders.length} รายการ? (ลบแล้วกู้คืนไม่ได้)`)) return;
-                try { for (const o of orders) { await supabase.from("orders").delete({ id: o.id }); } loadData(); } catch (e) { alert("ลบไม่สำเร็จ: " + e.message); }
+                if (!confirm(`ต้องการลบออเดอร์ทั้งหมด ${totalCount} รายการ? (ลบแล้วกู้คืนไม่ได้)`)) return;
+                try {
+                  // Delete visible page only for safety
+                  for (const o of orders) { await supabase.from("orders").delete({ id: o.id }); }
+                  loadOrders();
+                } catch (e) { alert("ลบไม่สำเร็จ: " + e.message); }
               }} style={{ fontSize: 12, color: colors.danger, cursor: "pointer", background: "none", border: "none", fontFamily: font }}>
-                ลบทั้งหมด
+                ลบหน้านี้
               </button>
             )}
           </div>
         </div>
+
         {loading ? (
           <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
         ) : (
           <DataTable
             columns={[
               { key: "ship_date", label: "วันที่" },
-              { key: "tracking_no", label: "Tracking" },
+              { key: "tracking_no", label: "Tracking", render: (v) => <span style={{ fontFamily: "monospace", fontSize: 11 }}>{v || "-"}</span> },
               { key: "carriers", label: "ขนส่ง", render: (v) => v?.name || "-" },
               { key: "recipient_name", label: "ผู้รับ" },
               { key: "weight_kg", label: "น้ำหนัก" },
-              { key: "cod_amount", label: "COD", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
-              { key: "shipping_cost", label: "ต้นทุน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
-              { key: "sell_price", label: "ราคาขาย", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+              { key: "cod_amount", label: "COD", render: (v) => `\u0E3F${parseFloat(v || 0).toLocaleString()}` },
+              { key: "shipping_cost", label: "ต้นทุน", render: (v) => `\u0E3F${parseFloat(v || 0).toLocaleString()}` },
+              { key: "sell_price", label: "ราคาขาย", render: (v) => `\u0E3F${parseFloat(v || 0).toLocaleString()}` },
               { key: "status", label: "สถานะ", render: statusBadge },
               { key: "source", label: "แหล่ง", render: (v) => v ? <Badge type="info">{v}</Badge> : "-" },
               { key: "id", label: "", render: (v) => (
@@ -996,12 +1318,40 @@ function OrdersPage() {
                   e.stopPropagation();
                   if (!confirm("ลบรายการนี้?")) return;
                   await supabase.from("orders").delete({ id: v });
-                  loadData();
+                  loadOrders();
                 }} style={{ color: colors.danger, cursor: "pointer", fontSize: 12 }}>ลบ</span>
               )},
             ]}
-            data={filteredOrders}
+            data={orders}
           />
+        )}
+
+        {/* PAGINATION */}
+        {totalPages > 1 && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 12, borderTop: `1px solid ${colors.borderLight}`, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontSize: 12, color: colors.textMuted }}>
+              แสดง {showFrom.toLocaleString()}–{showTo.toLocaleString()} จาก {totalCount.toLocaleString()} รายการ
+            </div>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <button onClick={() => setPage(0)} disabled={page === 0}
+                style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "none", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1, background: colors.borderLight, fontFamily: font }}>
+                ≪
+              </button>
+              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+                style={{ padding: "4px 10px", fontSize: 12, borderRadius: 6, border: "none", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1, background: colors.borderLight, fontFamily: font }}>
+                ← ก่อนหน้า
+              </button>
+              {pageButtons()}
+              <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                style={{ padding: "4px 10px", fontSize: 12, borderRadius: 6, border: "none", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1, background: colors.borderLight, fontFamily: font }}>
+                ถัดไป →
+              </button>
+              <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}
+                style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "none", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1, background: colors.borderLight, fontFamily: font }}>
+                ≫
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -1041,7 +1391,7 @@ function InvoicesPage() {
               { key: "invoice_no", label: "เลขบิล" },
               { key: "type", label: "ประเภท", render: (v) => <Badge type={v === "receivable" ? "success" : "warning"}>{v === "receivable" ? "รายรับ" : "รายจ่าย"}</Badge> },
               { key: "customers", label: "ลูกค้า", render: (v) => v?.company_name || "-" },
-              { key: "total_amount", label: "จำนวนเงิน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+              { key: "total_amount", label: "จำนวนเงิน", render: (v) => `\u0E3F${parseFloat(v || 0).toLocaleString()}` },
               { key: "due_date", label: "ครบกำหนด" },
               { key: "status", label: "สถานะ", render: statusBadge },
             ]}
@@ -1114,7 +1464,7 @@ function ExpensesPage() {
             { key: "category", label: "ประเภท", render: (v) => catLabels[v] || v },
             { key: "vendor_name", label: "ผู้ขาย" },
             { key: "description", label: "รายละเอียด" },
-            { key: "amount", label: "จำนวนเงิน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+            { key: "amount", label: "จำนวนเงิน", render: (v) => `\u0E3F${parseFloat(v || 0).toLocaleString()}` },
             { key: "due_date", label: "ครบกำหนด", render: (v) => v || "-" },
             { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "paid" ? "success" : v === "approved" ? "info" : "warning"}>{v === "paid" ? "จ่ายแล้ว" : v === "approved" ? "อนุมัติ" : "รอ"}</Badge> },
             { key: "id", label: "", render: (v) => <span onClick={async (e) => { e.stopPropagation(); if(!confirm("ลบรายการนี้?")) return; await supabase.from("expenses").delete({id:v}); loadExpenses(); }} style={{color:colors.danger,cursor:"pointer",fontSize:12}}>ลบ</span> },
@@ -1322,7 +1672,7 @@ function LeadsPage() {
               { key: "company_name", label: "บริษัท" },
               { key: "contact_name", label: "ผู้ติดต่อ" },
               { key: "phone", label: "เบอร์โทร" },
-              { key: "estimated_monthly_volume", label: "ยอดคาดการณ์/เดือน", render: (v) => v ? `฿${parseFloat(v).toLocaleString()}` : "-" },
+              { key: "estimated_monthly_volume", label: "ยอดคาดการณ์/เดือน", render: (v) => v ? `\u0E3F${parseFloat(v).toLocaleString()}` : "-" },
               { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "won" ? "success" : v === "lost" ? "danger" : "info"}>{statusLabels[v] || v}</Badge> },
             ]}
             data={leads}
