@@ -645,6 +645,8 @@ function OrdersPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [xlsxLoaded, setXlsxLoaded] = useState(false);
+  const [dateFilter, setDateFilter] = useState("");
+  const [periodFilter, setPeriodFilter] = useState("all");
   const [form, setForm] = useState({
     customer_id: "", carrier_id: "", tracking_no: "", order_no: "", recipient_name: "",
     destination: "", weight_kg: "", cod_amount: "0", shipping_cost: "0", sell_price: "0",
@@ -777,6 +779,22 @@ function OrdersPage() {
     window._importData = null;
     loadData();
   };
+
+  const filteredOrders = orders.filter(o => {
+    if (periodFilter === "all" && !dateFilter) return true;
+    const d = dateFilter || new Date().toISOString().split("T")[0];
+    const od = o.ship_date;
+    if (!od) return false;
+    if (periodFilter === "day") return od === d;
+    if (periodFilter === "week") {
+      const target = new Date(d), orderDate = new Date(od);
+      const diff = Math.abs(target - orderDate) / 86400000;
+      return diff < 7 && orderDate <= target;
+    }
+    if (periodFilter === "month") return od?.substring(0, 7) === d?.substring(0, 7);
+    if (dateFilter && periodFilter === "all") return od === dateFilter;
+    return true;
+  });
 
   const statusBadge = (v) => {
     const m = { pending: "warning", processing: "info", delivered: "success", returned: "danger", disputed: "danger", cancelled: "default" };
@@ -923,19 +941,40 @@ function OrdersPage() {
       )}
 
       <div style={css.card}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>รายการออเดอร์ ({orders.length})</div>
-          {orders.length > 0 && (
-            <button onClick={async () => {
-              if (!confirm(`ต้องการลบออเดอร์ทั้งหมด ${orders.length} รายการ? (ลบแล้วกู้คืนไม่ได้)`)) return;
-              try {
-                for (const o of orders) { await supabase.from("orders").delete({ id: o.id }); }
-                loadData();
-              } catch (e) { alert("ลบไม่สำเร็จ: " + e.message); }
-            }} style={{ fontSize: 12, color: colors.danger, cursor: "pointer", background: "none", border: "none", fontFamily: font }}>
-              ลบทั้งหมด
-            </button>
-          )}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>รายการออเดอร์ ({filteredOrders.length})</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} style={{ ...css.input, width: 160, padding: "6px 10px", fontSize: 12 }} />
+            <select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)} style={{ ...css.input, width: 120, padding: "6px 10px", fontSize: 12 }}>
+              <option value="all">ทั้งหมด</option>
+              <option value="day">รายวัน</option>
+              <option value="week">รายสัปดาห์</option>
+              <option value="month">รายเดือน</option>
+            </select>
+            {filteredOrders.length > 0 && (
+              <button onClick={() => {
+                if (!window.XLSX) return alert("กำลังโหลด Excel library...");
+                const exportData = filteredOrders.map(o => ({
+                  "วันที่": o.ship_date, "Tracking": o.tracking_no, "ขนส่ง": o.carriers?.name || "", "ผู้รับ": o.recipient_name,
+                  "น้ำหนัก": o.weight_kg, "COD": o.cod_amount, "ต้นทุน": o.shipping_cost, "ราคาขาย": o.sell_price, "สถานะ": o.status, "แหล่ง": o.source
+                }));
+                const ws = window.XLSX.utils.json_to_sheet(exportData);
+                const wb = window.XLSX.utils.book_new();
+                window.XLSX.utils.book_append_sheet(wb, ws, "Orders");
+                window.XLSX.writeFile(wb, `orders_${dateFilter || "all"}.xlsx`);
+              }} style={{ ...css.btnPrimary, width: "auto", padding: "6px 14px", fontSize: 12, background: colors.primary }}>
+                Export Excel
+              </button>
+            )}
+            {orders.length > 0 && (
+              <button onClick={async () => {
+                if (!confirm(`ต้องการลบออเดอร์ทั้งหมด ${orders.length} รายการ? (ลบแล้วกู้คืนไม่ได้)`)) return;
+                try { for (const o of orders) { await supabase.from("orders").delete({ id: o.id }); } loadData(); } catch (e) { alert("ลบไม่สำเร็จ: " + e.message); }
+              }} style={{ fontSize: 12, color: colors.danger, cursor: "pointer", background: "none", border: "none", fontFamily: font }}>
+                ลบทั้งหมด
+              </button>
+            )}
+          </div>
         </div>
         {loading ? (
           <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
@@ -961,7 +1000,7 @@ function OrdersPage() {
                 }} style={{ color: colors.danger, cursor: "pointer", fontSize: 12 }}>ลบ</span>
               )},
             ]}
-            data={orders}
+            data={filteredOrders}
           />
         )}
       </div>
@@ -1015,40 +1054,71 @@ function InvoicesPage() {
 }
 
 // ============================================================
-// EXPENSES PAGE
+// EXPENSES PAGE (with add form + delete)
 // ============================================================
 function ExpensesPage() {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ category: "other", vendor_name: "", description: "", amount: "", expense_date: new Date().toISOString().split("T")[0], due_date: "", notes: "" });
+  const auth = useAuth();
 
-  useEffect(() => {
-    (async () => {
-      const data = await supabase.from("expenses").select("*", { order: "created_at.desc" });
-      setExpenses(Array.isArray(data) ? data : []);
-      setLoading(false);
-    })();
-  }, []);
-
+  useEffect(() => { loadExpenses(); }, []);
+  const loadExpenses = async () => {
+    const data = await supabase.from("expenses").select("*", { order: "created_at.desc" });
+    setExpenses(Array.isArray(data) ? data : []);
+    setLoading(false);
+  };
+  const handleAdd = async () => {
+    try {
+      await supabase.from("expenses").insert({ ...form, amount: parseFloat(form.amount) || 0, status: "pending", created_by: auth?.user?.id });
+      setShowForm(false);
+      setForm({ category: "other", vendor_name: "", description: "", amount: "", expense_date: new Date().toISOString().split("T")[0], due_date: "", notes: "" });
+      loadExpenses();
+    } catch (e) { alert("เกิดข้อผิดพลาด: " + e.message); }
+  };
   const catLabels = { shipping: "ค่าขนส่ง", rent: "ค่าเช่า", salary: "เงินเดือน", utilities: "สาธารณูปโภค", supplies: "วัสดุ", fuel: "น้ำมัน", insurance: "ประกัน", other: "อื่นๆ" };
+  const catOptions = Object.entries(catLabels);
 
   return (
     <div>
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>ค่าใช้จ่าย</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>ค่าใช้จ่าย</h2>
+        <button onClick={() => setShowForm(!showForm)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 20px", fontSize: 13 }}>+ เพิ่มค่าใช้จ่าย</button>
+      </div>
+      {showForm && (
+        <div style={{ ...css.card, marginBottom: 20 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>เพิ่มค่าใช้จ่าย</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div><label style={css.label}>ประเภท *</label>
+              <select style={css.input} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+                {catOptions.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select></div>
+            <div><label style={css.label}>ผู้ขาย/บริษัท</label><input style={css.input} placeholder="ชื่อผู้ขาย" value={form.vendor_name} onChange={(e) => setForm({ ...form, vendor_name: e.target.value })} /></div>
+            <div><label style={css.label}>รายละเอียด</label><input style={css.input} placeholder="รายละเอียดค่าใช้จ่าย" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
+            <div><label style={css.label}>จำนวนเงิน (บาท) *</label><input style={css.input} type="number" placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
+            <div><label style={css.label}>วันที่</label><input style={css.input} type="date" value={form.expense_date} onChange={(e) => setForm({ ...form, expense_date: e.target.value })} /></div>
+            <div><label style={css.label}>ครบกำหนดชำระ</label><input style={css.input} type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} /></div>
+            <div style={{ gridColumn: "1 / -1" }}><label style={css.label}>หมายเหตุ</label><input style={css.input} placeholder="หมายเหตุเพิ่มเติม" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={handleAdd} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13 }}>บันทึก</button>
+            <button onClick={() => setShowForm(false)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.border, color: colors.text }}>ยกเลิก</button>
+          </div>
+        </div>
+      )}
       <div style={css.card}>
-        {loading ? (
-          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
-        ) : (
-          <DataTable
-            columns={[
-              { key: "expense_date", label: "วันที่" },
-              { key: "category", label: "ประเภท", render: (v) => catLabels[v] || v },
-              { key: "vendor_name", label: "ผู้ขาย" },
-              { key: "description", label: "รายละเอียด" },
-              { key: "amount", label: "จำนวนเงิน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
-              { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "paid" ? "success" : v === "approved" ? "info" : "warning"}>{v === "paid" ? "จ่ายแล้ว" : v === "approved" ? "อนุมัติ" : "รอ"}</Badge> },
-            ]}
-            data={expenses}
-          />
+        {loading ? <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div> : (
+          <DataTable columns={[
+            { key: "expense_date", label: "วันที่" },
+            { key: "category", label: "ประเภท", render: (v) => catLabels[v] || v },
+            { key: "vendor_name", label: "ผู้ขาย" },
+            { key: "description", label: "รายละเอียด" },
+            { key: "amount", label: "จำนวนเงิน", render: (v) => `฿${parseFloat(v || 0).toLocaleString()}` },
+            { key: "due_date", label: "ครบกำหนด", render: (v) => v || "-" },
+            { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "paid" ? "success" : v === "approved" ? "info" : "warning"}>{v === "paid" ? "จ่ายแล้ว" : v === "approved" ? "อนุมัติ" : "รอ"}</Badge> },
+            { key: "id", label: "", render: (v) => <span onClick={async (e) => { e.stopPropagation(); if(!confirm("ลบรายการนี้?")) return; await supabase.from("expenses").delete({id:v}); loadExpenses(); }} style={{color:colors.danger,cursor:"pointer",fontSize:12}}>ลบ</span> },
+          ]} data={expenses} />
         )}
       </div>
     </div>
@@ -1056,37 +1126,89 @@ function ExpensesPage() {
 }
 
 // ============================================================
-// CASES PAGE
+// CASES PAGE (with add form + delete)
 // ============================================================
 function CasesPage() {
   const [cases, setCases] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ customer_id: "", subject: "", description: "", priority: "medium", category: "" });
+  const auth = useAuth();
 
-  useEffect(() => {
-    (async () => {
-      const data = await supabase.from("support_cases").select("*,customers(company_name)", { order: "created_at.desc" });
-      setCases(Array.isArray(data) ? data : []);
-      setLoading(false);
-    })();
-  }, []);
+  useEffect(() => { loadData(); }, []);
+  const loadData = async () => {
+    const [c, cus] = await Promise.all([
+      supabase.from("support_cases").select("*,customers(company_name)", { order: "created_at.desc" }),
+      supabase.from("customers").select("id,company_name"),
+    ]);
+    setCases(Array.isArray(c) ? c : []);
+    setCustomers(Array.isArray(cus) ? cus : []);
+    setLoading(false);
+  };
+  const handleAdd = async () => {
+    try {
+      const caseNo = "CS-" + String(Date.now()).slice(-6);
+      await supabase.from("support_cases").insert({ ...form, case_no: caseNo, status: "open", created_by: auth?.user?.id, customer_id: form.customer_id || null });
+      setShowForm(false);
+      setForm({ customer_id: "", subject: "", description: "", priority: "medium", category: "" });
+      loadData();
+    } catch (e) { alert("เกิดข้อผิดพลาด: " + e.message); }
+  };
+  const priLabels = { low: "ต่ำ", medium: "ปานกลาง", high: "สูง", urgent: "ด่วนมาก" };
+  const statusLabels = { open: "เปิด", in_progress: "กำลังดำเนินการ", waiting: "รอ", resolved: "แก้ไขแล้ว", closed: "ปิด" };
 
   return (
     <div>
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20, letterSpacing: -0.3 }}>เคส CS / Support</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>เคส CS / Support</h2>
+        <button onClick={() => setShowForm(!showForm)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 20px", fontSize: 13 }}>+ เปิดเคสใหม่</button>
+      </div>
+      {showForm && (
+        <div style={{ ...css.card, marginBottom: 20 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>เปิดเคสใหม่</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div><label style={css.label}>ลูกค้า</label>
+              <select style={css.input} value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })}>
+                <option value="">เลือกลูกค้า (ถ้ามี)</option>
+                {customers.map(c => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+              </select></div>
+            <div><label style={css.label}>ความสำคัญ</label>
+              <select style={css.input} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
+                {Object.entries(priLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select></div>
+            <div><label style={css.label}>หัวข้อปัญหา *</label><input style={css.input} placeholder="เช่น พัสดุเสียหาย, COD ไม่ตรง" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} /></div>
+            <div><label style={css.label}>ประเภท</label>
+              <select style={css.input} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+                <option value="">เลือกประเภท</option>
+                <option value="damaged">พัสดุเสียหาย</option>
+                <option value="lost">พัสดุสูญหาย</option>
+                <option value="wrong_address">ส่งผิดที่อยู่</option>
+                <option value="cod_mismatch">COD ไม่ตรง</option>
+                <option value="delay">ส่งล่าช้า</option>
+                <option value="return">ตีกลับ</option>
+                <option value="billing">แย้งบิล</option>
+                <option value="other">อื่นๆ</option>
+              </select></div>
+            <div style={{ gridColumn: "1 / -1" }}><label style={css.label}>รายละเอียด</label><input style={css.input} placeholder="อธิบายปัญหา..." value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={handleAdd} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13 }}>บันทึก</button>
+            <button onClick={() => setShowForm(false)} style={{ ...css.btnPrimary, width: "auto", padding: "10px 24px", fontSize: 13, background: colors.border, color: colors.text }}>ยกเลิก</button>
+          </div>
+        </div>
+      )}
       <div style={css.card}>
-        {loading ? (
-          <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div>
-        ) : (
-          <DataTable
-            columns={[
-              { key: "case_no", label: "เคส" },
-              { key: "customers", label: "ลูกค้า", render: (v) => v?.company_name || "-" },
-              { key: "subject", label: "หัวข้อ" },
-              { key: "priority", label: "ความสำคัญ", render: (v) => <Badge type={v === "urgent" ? "danger" : v === "high" ? "warning" : "default"}>{v}</Badge> },
-              { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "resolved" || v === "closed" ? "success" : v === "open" ? "danger" : "warning"}>{v}</Badge> },
-            ]}
-            data={cases}
-          />
+        {loading ? <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>กำลังโหลด...</div> : (
+          <DataTable columns={[
+            { key: "case_no", label: "เคส" },
+            { key: "customers", label: "ลูกค้า", render: (v) => v?.company_name || "-" },
+            { key: "subject", label: "หัวข้อ" },
+            { key: "category", label: "ประเภท" },
+            { key: "priority", label: "ความสำคัญ", render: (v) => <Badge type={v === "urgent" ? "danger" : v === "high" ? "warning" : "default"}>{priLabels[v] || v}</Badge> },
+            { key: "status", label: "สถานะ", render: (v) => <Badge type={v === "resolved" || v === "closed" ? "success" : v === "open" ? "danger" : "warning"}>{statusLabels[v] || v}</Badge> },
+            { key: "id", label: "", render: (v) => <span onClick={async (e) => { e.stopPropagation(); if(!confirm("ลบเคสนี้?")) return; await supabase.from("support_cases").delete({id:v}); loadData(); }} style={{color:colors.danger,cursor:"pointer",fontSize:12}}>ลบ</span> },
+          ]} data={cases} />
         )}
       </div>
     </div>
