@@ -377,20 +377,22 @@ function LoginPage({ onLogin }) {
 const menuItems = {
   manager: [
     { key: "dashboard", label: "Dashboard", icon: "◈" },
-    { key: "customers", label: "ลูกค้า", icon: "◎" },
+    { key: "wf_customers", label: "ลูกค้า / ราคาขาย", icon: "◎" },
+    { key: "surcharges", label: "Surcharge", icon: "◆" },
     { key: "orders", label: "ออเดอร์", icon: "▤" },
     { key: "invoices", label: "การเงิน", icon: "◇" },
     { key: "expenses", label: "ค่าใช้จ่าย", icon: "▦" },
-    { key: "pricing", label: "ตารางราคา", icon: "◫" },
+    { key: "pricing", label: "ราคาทุนขนส่ง", icon: "◫" },
     { key: "cases", label: "CS/เคส", icon: "◉" },
     { key: "carriers", label: "ขนส่ง", icon: "▷" },
     { key: "activity", label: "Activity Log", icon: "◔" },
   ],
   admin: [
     { key: "dashboard", label: "Dashboard", icon: "◈" },
-    { key: "customers", label: "ลูกค้า", icon: "◎" },
+    { key: "wf_customers", label: "ลูกค้า / ราคาขาย", icon: "◎" },
+    { key: "surcharges", label: "Surcharge", icon: "◆" },
     { key: "orders", label: "ออเดอร์/นำเข้า", icon: "▤" },
-    { key: "pricing", label: "ตารางราคา", icon: "◫" },
+    { key: "pricing", label: "ราคาทุนขนส่ง", icon: "◫" },
     { key: "invoices", label: "วางบิล", icon: "◇" },
     { key: "carriers", label: "กระทบยอดขนส่ง", icon: "▷" },
   ],
@@ -1708,6 +1710,94 @@ function PriceTablesPage() {
     document.head.appendChild(s);
   };
 
+  // Import DHL Rate Card (.xlsx) จาก DHL โดยตรง
+  const handleImportDHLRateCard = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !window.XLSX) return;
+    setImporting("dhl");
+    const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+    const token = session?.access_token;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const wb = window.XLSX.read(ev.target.result, { type:"array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = window.XLSX.utils.sheet_to_json(ws, { header:1, defval:"" });
+
+        // หา EKP No. (10 หลัก)
+        let ekpNo = "";
+        for (let i = 0; i < Math.min(10, raw.length) && !ekpNo; i++) {
+          for (let j = 0; j < raw[i].length && !ekpNo; j++) {
+            if (/^\d{10}$/.test(String(raw[i][j]).trim())) ekpNo = String(raw[i][j]).trim();
+          }
+        }
+        if (!ekpNo) { alert("ไม่พบ EKP No. (10 หลัก) ในไฟล์"); setImporting(null); return; }
+        const serviceType = file.name.toUpperCase().includes("ECO") ? "ECO" : "PDO";
+
+        // หา header row
+        let headerRow = -1;
+        for (let i = 0; i < raw.length; i++) {
+          if (String(raw[i][0]).includes("Weight")) { headerRow = i; break; }
+        }
+        if (headerRow < 0) { alert("ไม่พบ header 'Weight (g)'"); setImporting(null); return; }
+
+        // หา column index
+        const hdr = raw[headerRow];
+        let colBKK=-1, colCE=-1, colNNS=-1, colUPC=-1;
+        hdr.forEach((v, j) => {
+          const s = String(v).trim();
+          if (s === "BKK") colBKK = j;
+          else if (s.includes("C,E") || s.includes("SH")) colCE = j;
+          else if (s.includes("N, NE") || s.includes("LH")) colNNS = j;
+          else if (s === "UPC") colUPC = j;
+        });
+
+        // Parse data
+        const ratesData = [];
+        for (let i = headerRow + 1; i < raw.length; i++) {
+          const row = raw[i];
+          const wt = String(row[0]).trim();
+          if (!wt || !wt.includes("-")) continue;
+          try {
+            const parts = wt.split("-");
+            const fromG = parseInt(parts[0].trim().replace(/,/g,"")) || 0;
+            const toG = parseInt(parts[parts.length-1].trim().replace(/,/g,""));
+            if (isNaN(toG)) continue;
+            ratesData.push({
+              weight_g_from: fromG, weight_g_to: toG,
+              cost_bkk:     colBKK >= 0 ? parseFloat(row[colBKK])||0 : 0,
+              cost_upc_ce:  colCE  >= 0 ? parseFloat(row[colCE]) ||0 : 0,
+              cost_upc_nns: colNNS >= 0 ? parseFloat(row[colNNS])||0 : 0,
+              cost_upc:     colUPC >= 0 ? parseFloat(row[colUPC])||0 : 0,
+            });
+          } catch {}
+        }
+        if (ratesData.length === 0) { alert("ไม่พบข้อมูลราคา"); setImporting(null); return; }
+
+        // Upsert dhl_cost_tables
+        const tRes = await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_tables`, {
+          method:"POST", headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify({ ekp_no:ekpNo, service_type:serviceType, account_name:`Whale Fast (${serviceType})`, is_active:true }),
+        });
+        const tData = await tRes.json();
+        const tableId = Array.isArray(tData) ? tData[0]?.id : tData?.id;
+        if (!tableId) { alert("สร้างตารางไม่สำเร็จ"); setImporting(null); return; }
+
+        // Delete old + insert new
+        await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_rates?cost_table_id=eq.${tableId}`, { method:"DELETE", headers:supabaseHeaders(token) });
+        const batch = ratesData.map(r => ({ ...r, cost_table_id:tableId }));
+        for (let i = 0; i < batch.length; i += 50) {
+          await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_rates`, {
+            method:"POST", headers:supabaseHeaders(token), body:JSON.stringify(batch.slice(i,i+50)),
+          });
+        }
+        alert(`✅ Import DHL ${serviceType} (EKP: ${ekpNo}) สำเร็จ ${ratesData.length} rows`);
+      } catch (err) { alert("Error: " + err.message); }
+      setImporting(null); e.target.value = "";
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   const loadTables = async () => {
     const data = await supabase.from("price_tables").select("*", { order: "carrier_code,table_name" });
     setTables(Array.isArray(data) ? data : []);
@@ -1910,9 +2000,15 @@ function PriceTablesPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>ตารางราคาขนส่ง</h2>
-        <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 2 }}>คลิกที่ตัวเลขเพื่อแก้ไขราคาได้เลย</div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:20 }}>
+        <div>
+          <h2 style={{ fontSize:22, fontWeight:700, letterSpacing:-0.3 }}>ตารางราคาทุนขนส่ง</h2>
+          <div style={{ fontSize:13, color:colors.textMuted, marginTop:2 }}>คลิกตัวเลขเพื่อแก้ไขได้เลย | Flash (kg) / DHL (gram)</div>
+        </div>
+        <label style={{ padding:"8px 14px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.info}`, background:"transparent", color:colors.info, cursor: xlsxLoaded ? "pointer" : "default", fontFamily:font, fontWeight:500, alignSelf:"flex-start", opacity: xlsxLoaded ? 1 : 0.5 }}>
+          {importing === "dhl" ? "กำลัง Import..." : "📥 Import DHL Rate Card (.xlsx)"}
+          <input type="file" accept=".xlsx" onChange={handleImportDHLRateCard} disabled={!xlsxLoaded || importing === "dhl"} style={{ display:"none" }} />
+        </label>
       </div>
 
       {/* Zone tabs */}
@@ -2029,6 +2125,807 @@ function PriceTablesPage() {
   );
 }
 
+
+// ============================================================
+// WF CUSTOMERS PAGE — จัดการลูกค้า + ราคาขาย
+// ============================================================
+function WFCustomersPage() {
+  const [customers, setCustomers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [statusFilter, setStatusFilter] = useState("active");
+  const [selected, setSelected] = useState(null);
+  const [tab, setTab] = useState("info"); // info | flash | dhl | surcharge | sender
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  // Pricing state
+  const [pricingTables, setPricingTables] = useState([]);
+  const [pricingRates, setPricingRates] = useState({});
+  const [surchargeOverrides, setSurchargeOverrides] = useState([]);
+  const [carrierSurcharges, setCarrierSurcharges] = useState([]);
+  const [senderMappings, setSenderMappings] = useState([]);
+  const [loadingPricing, setLoadingPricing] = useState(false);
+  const [xlsxLoaded, setXlsxLoaded] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+
+  const [form, setForm] = useState({
+    account_code:"", account_parent:"CZ0108", customer_name:"", status:"active",
+    phone:"", email:"", address:"", business_type:"", product_type:"",
+    sales_owner:"", customer_category:"", payment_type:"cash", billing_cycle:"",
+    cod_percent:"2", tax_id:"", invoice_name:"", bank_name:"", bank_account:"",
+    bank_account_name:"", line_group_id:"", notes:""
+  });
+
+  useEffect(() => { loadCustomers(); loadXlsx(); loadCarrierSurcharges(); }, []);
+
+  const loadXlsx = () => {
+    if (window.XLSX) { setXlsxLoaded(true); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    s.onload = () => setXlsxLoaded(true);
+    document.head.appendChild(s);
+  };
+
+  const loadCustomers = async () => {
+    setLoading(true);
+    const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+    const token = session?.access_token;
+    let url = `${SUPABASE_URL}/rest/v1/wf_customers?select=*&order=account_code.asc`;
+    if (statusFilter) url += `&status=eq.${statusFilter}`;
+    if (search) url += `&or=(account_code.ilike.*${search}*,customer_name.ilike.*${search}*,phone.ilike.*${search}*)`;
+    const res = await fetch(url, { headers: supabaseHeaders(token) });
+    const data = await res.json();
+    setCustomers(Array.isArray(data) ? data : []);
+    setLoading(false);
+  };
+
+  const loadCarrierSurcharges = async () => {
+    const data = await supabase.from("carrier_surcharges").select("*", { order: "carrier_code,sort_order" });
+    setCarrierSurcharges(Array.isArray(data) ? data : []);
+  };
+
+  const loadCustomerPricing = async (customerId, accountCode) => {
+    setLoadingPricing(true);
+    const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+    const token = session?.access_token;
+
+    // Load pricing tables
+    const url = `${SUPABASE_URL}/rest/v1/customer_pricing_tables?account_code=eq.${encodeURIComponent(accountCode)}&order=carrier_code,zone`;
+    const res = await fetch(url, { headers: supabaseHeaders(token) });
+    const tables = await res.json();
+    setPricingTables(Array.isArray(tables) ? tables : []);
+
+    // Load rates for each table
+    const ratesMap = {};
+    for (const t of (Array.isArray(tables) ? tables : [])) {
+      const rUrl = `${SUPABASE_URL}/rest/v1/customer_pricing_rates?pricing_table_id=eq.${t.id}&order=weight_kg.asc`;
+      const rRes = await fetch(rUrl, { headers: supabaseHeaders(token) });
+      const rates = await rRes.json();
+      ratesMap[t.id] = Array.isArray(rates) ? rates : [];
+    }
+    setPricingRates(ratesMap);
+
+    // Surcharge overrides
+    const sUrl = `${SUPABASE_URL}/rest/v1/customer_surcharge_overrides?account_code=eq.${encodeURIComponent(accountCode)}`;
+    const sRes = await fetch(sUrl, { headers: supabaseHeaders(token) });
+    const sData = await sRes.json();
+    setSurchargeOverrides(Array.isArray(sData) ? sData : []);
+
+    // Sender mappings
+    const mUrl = `${SUPABASE_URL}/rest/v1/customer_sender_mapping?account_code=eq.${encodeURIComponent(accountCode)}`;
+    const mRes = await fetch(mUrl, { headers: supabaseHeaders(token) });
+    const mData = await mRes.json();
+    setSenderMappings(Array.isArray(mData) ? mData : []);
+
+    setLoadingPricing(false);
+  };
+
+  useEffect(() => { loadCustomers(); }, [search, statusFilter]);
+
+  const selectCustomer = async (c) => {
+    setSelected(c);
+    setTab("info");
+    await loadCustomerPricing(c.id, c.account_code);
+  };
+
+  const handleSave = async () => {
+    try {
+      const payload = { ...form, cod_percent: parseFloat(form.cod_percent) || 2 };
+      if (selected) {
+        await supabase.from("wf_customers").update(payload, { id: selected.id });
+        setSelected({ ...selected, ...payload });
+      } else {
+        await supabase.from("wf_customers").insert(payload);
+        setShowAddForm(false);
+        setForm({ account_code:"", account_parent:"CZ0108", customer_name:"", status:"active", phone:"", email:"", address:"", business_type:"", product_type:"", sales_owner:"", customer_category:"", payment_type:"cash", billing_cycle:"", cod_percent:"2", tax_id:"", invoice_name:"", bank_name:"", bank_account:"", bank_account_name:"", line_group_id:"", notes:"" });
+      }
+      loadCustomers();
+    } catch (e) { alert("Error: " + e.message); }
+  };
+
+  // Import pricing from Excel template
+  const handleImportPricing = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !window.XLSX || !selected) return;
+    setImporting(true); setImportResult(null);
+    const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+    const token = session?.access_token;
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const wb = window.XLSX.read(ev.target.result, { type: "array" });
+        let totalImported = 0;
+
+        // Process Flash sheet
+        const flashSheet = wb.Sheets["ราคาขาย Flash"];
+        if (flashSheet) {
+          const rows = window.XLSX.utils.sheet_to_json(flashSheet, { defval: 0 });
+          for (const row of rows) {
+            if (!row["account_code**"] || row["account_code**"] !== selected.account_code) continue;
+            const zone = row["zone**
+(BKK/UPC)"] || row["zone**(BKK/UPC)"] || "";
+            if (!zone) continue;
+            // Upsert pricing table
+            const tUrl = `${SUPABASE_URL}/rest/v1/customer_pricing_tables`;
+            const tRes = await fetch(tUrl, {
+              method: "POST",
+              headers: { ...supabaseHeaders(token), Prefer: "resolution=merge-duplicates,return=representation" },
+              body: JSON.stringify({ customer_id: selected.id, account_code: selected.account_code, carrier_code: "FLASH", zone, is_active: true }),
+            });
+            const tData = await tRes.json();
+            const tableId = Array.isArray(tData) ? tData[0]?.id : tData?.id;
+            if (!tableId) continue;
+            // Insert rates
+            const rates = [];
+            for (let kg = 1; kg <= 50; kg++) {
+              const price = parseFloat(row[kg] || row[String(kg)]) || 0;
+              if (price > 0) rates.push({ pricing_table_id: tableId, weight_kg: kg, sell_price: price });
+            }
+            if (rates.length > 0) {
+              // Delete old then insert
+              await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_rates?pricing_table_id=eq.${tableId}`, { method: "DELETE", headers: supabaseHeaders(token) });
+              await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_rates`, {
+                method: "POST", headers: { ...supabaseHeaders(token), Prefer: "resolution=ignore-duplicates" },
+                body: JSON.stringify(rates),
+              });
+              totalImported += rates.length;
+            }
+          }
+        }
+
+        // Process DHL sheet
+        const dhlSheet = wb.Sheets["ราคาขาย DHL"];
+        if (dhlSheet) {
+          const rows = window.XLSX.utils.sheet_to_json(dhlSheet, { defval: 0 });
+          for (const row of rows) {
+            if (!row["account_code**"] || row["account_code**"] !== selected.account_code) continue;
+            const zone = row["zone**
+(BKK/UPC_CE/UPC_NNS)"] || row["zone**(BKK/UPC_CE/UPC_NNS)"] || "";
+            if (!zone) continue;
+            const tUrl = `${SUPABASE_URL}/rest/v1/customer_pricing_tables`;
+            const tRes = await fetch(tUrl, {
+              method: "POST",
+              headers: { ...supabaseHeaders(token), Prefer: "resolution=merge-duplicates,return=representation" },
+              body: JSON.stringify({ customer_id: selected.id, account_code: selected.account_code, carrier_code: "DHL", zone, is_active: true }),
+            });
+            const tData = await tRes.json();
+            const tableId = Array.isArray(tData) ? tData[0]?.id : tData?.id;
+            if (!tableId) continue;
+            const rates = [];
+            for (let kg = 1; kg <= 30; kg++) {
+              const price = parseFloat(row[kg] || row[String(kg)]) || 0;
+              if (price > 0) rates.push({ pricing_table_id: tableId, weight_kg: kg, sell_price: price });
+            }
+            if (rates.length > 0) {
+              await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_rates?pricing_table_id=eq.${tableId}`, { method: "DELETE", headers: supabaseHeaders(token) });
+              await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_rates`, {
+                method: "POST", headers: { ...supabaseHeaders(token), Prefer: "resolution=ignore-duplicates" },
+                body: JSON.stringify(rates),
+              });
+              totalImported += rates.length;
+            }
+          }
+        }
+
+        setImportResult({ success: totalImported });
+        await loadCustomerPricing(selected.id, selected.account_code);
+      } catch (err) { setImportResult({ error: err.message }); }
+      setImporting(false); e.target.value = "";
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // Download pricing template for selected customer
+  const downloadTemplate = () => {
+    if (!window.XLSX || !selected) return;
+    const wb = window.XLSX.utils.book_new();
+    // Flash sheet
+    const flashHeaders = ["account_code**", "zone**
+(BKK/UPC)", ...Array.from({length:50},(_,i)=>i+1)];
+    const flashRows = ["BKK","UPC"].map(zone => {
+      const t = pricingTables.find(t => t.carrier_code==="FLASH" && t.zone===zone);
+      const rates = t ? (pricingRates[t.id] || []) : [];
+      const row = { "account_code**": selected.account_code, "zone**
+(BKK/UPC)": zone };
+      rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
+      return row;
+    });
+    const ws1 = window.XLSX.utils.json_to_sheet(flashRows, { header: flashHeaders });
+    window.XLSX.utils.book_append_sheet(wb, ws1, "ราคาขาย Flash");
+    // DHL sheet
+    const dhlRows = ["BKK","UPC_CE","UPC_NNS"].map(zone => {
+      const t = pricingTables.find(t => t.carrier_code==="DHL" && t.zone===zone);
+      const rates = t ? (pricingRates[t.id] || []) : [];
+      const row = { "account_code**": selected.account_code, "zone**
+(BKK/UPC_CE/UPC_NNS)": zone };
+      rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
+      return row;
+    });
+    const ws2 = window.XLSX.utils.json_to_sheet(dhlRows);
+    window.XLSX.utils.book_append_sheet(wb, ws2, "ราคาขาย DHL");
+    window.XLSX.writeFile(wb, `${selected.account_code}_pricing.xlsx`);
+  };
+
+  // Render pricing table (Flash or DHL)
+  const PricingTable = ({ carrier, zones }) => {
+    const [editingCell, setEditingCell] = useState(null);
+    const maxKg = carrier === "FLASH" ? 50 : 30;
+
+    const getRate = (tableId, kg) => {
+      const rates = pricingRates[tableId] || [];
+      return rates.find(r => r.weight_kg === kg)?.sell_price || 0;
+    };
+
+    const updateRate = async (tableId, kg, price) => {
+      const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+      const token = session?.access_token;
+      const rates = pricingRates[tableId] || [];
+      const existing = rates.find(r => r.weight_kg === kg);
+      if (existing) {
+        await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_rates?id=eq.${existing.id}`, {
+          method: "PATCH", headers: supabaseHeaders(token), body: JSON.stringify({ sell_price: parseFloat(price) || 0 }),
+        });
+        setPricingRates(prev => ({ ...prev, [tableId]: prev[tableId].map(r => r.weight_kg === kg ? { ...r, sell_price: parseFloat(price)||0 } : r) }));
+      } else {
+        // Insert new rate
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_rates`, {
+          method: "POST", headers: supabaseHeaders(token), body: JSON.stringify({ pricing_table_id: tableId, weight_kg: kg, sell_price: parseFloat(price)||0 }),
+        });
+        const newRate = await res.json();
+        if (Array.isArray(newRate) && newRate[0]) {
+          setPricingRates(prev => ({ ...prev, [tableId]: [...(prev[tableId]||[]), newRate[0]] }));
+        }
+      }
+    };
+
+    const ensureTable = async (zone) => {
+      const existing = pricingTables.find(t => t.carrier_code === carrier && t.zone === zone);
+      if (existing) return existing.id;
+      const session = JSON.parse(localStorage.getItem("wf_session") || "null");
+      const token = session?.access_token;
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_tables`, {
+        method: "POST", headers: { ...supabaseHeaders(token), Prefer: "return=representation" },
+        body: JSON.stringify({ customer_id: selected.id, account_code: selected.account_code, carrier_code: carrier, zone, is_active: true }),
+      });
+      const data = await res.json();
+      const newTable = Array.isArray(data) ? data[0] : data;
+      if (newTable?.id) {
+        setPricingTables(prev => [...prev, newTable]);
+        setPricingRates(prev => ({ ...prev, [newTable.id]: [] }));
+        return newTable.id;
+      }
+      return null;
+    };
+
+    const zoneColors = { BKK:"#FFF9C4", UPC:"#E8F5E9", UPC_CE:"#E3F2FD", UPC_NNS:"#FCE4EC" };
+
+    return (
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ borderCollapse:"collapse", fontSize:11, fontFamily:font }}>
+          <thead>
+            <tr>
+              <th style={{ padding:"4px 8px", border:`1px solid ${colors.border}`, background:"#fafafa", fontWeight:600, fontSize:10 }}>kg</th>
+              {zones.map(zone => (
+                <th key={zone} style={{ padding:"4px 6px", border:`1px solid ${colors.border}`, background: zoneColors[zone]||colors.borderLight, fontWeight:600, fontSize:10, minWidth:70 }}>
+                  {zone}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({length: maxKg}, (_,i) => i+1).map(kg => (
+              <tr key={kg} style={{ background: kg%2===0 ? "#fafaf8" : "transparent" }}>
+                <td style={{ padding:"2px 8px", border:`1px solid ${colors.borderLight}`, fontWeight:600, textAlign:"center", fontSize:11 }}>{kg}</td>
+                {zones.map(zone => {
+                  const t = pricingTables.find(t => t.carrier_code===carrier && t.zone===zone);
+                  const val = t ? getRate(t.id, kg) : 0;
+                  const cellKey = `${carrier}-${zone}-${kg}`;
+                  const isEditing = editingCell === cellKey;
+                  return (
+                    <td key={zone} style={{ padding:"1px 2px", border:`1px solid ${colors.borderLight}` }}>
+                      {isEditing ? (
+                        <input type="number" defaultValue={val} autoFocus
+                          style={{ width:60, padding:"1px 3px", fontSize:11, border:`1.5px solid ${colors.primary}`, borderRadius:3, textAlign:"right", fontFamily:font, outline:"none" }}
+                          onBlur={async (e) => {
+                            setEditingCell(null);
+                            const tableId = t?.id || await ensureTable(zone);
+                            if (tableId) await updateRate(tableId, kg, e.target.value);
+                          }}
+                          onKeyDown={(e) => { if(e.key==="Enter") e.target.blur(); }}
+                        />
+                      ) : (
+                        <span onClick={async () => { await ensureTable(zone); setEditingCell(cellKey); }}
+                          style={{ cursor:"pointer", display:"block", textAlign:"right", padding:"2px 4px", minWidth:50, color: val>0 ? colors.primary : colors.textLight, fontWeight: val>0 ? 600 : 400 }}
+                          onMouseEnter={e=>e.target.style.background="#f0f0f0"} onMouseLeave={e=>e.target.style.background="transparent"}>
+                          {val > 0 ? val : "-"}
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ marginTop:6, fontSize:10, color:colors.textLight }}>คลิกตัวเลขเพื่อแก้ไข → Enter บันทึก</div>
+      </div>
+    );
+  };
+
+  // Customer form fields
+  const FORM_FIELDS = [
+    { key:"account_code", label:"Account Code **", req:true, placeholder:"CZ0108-49", half:true },
+    { key:"customer_name", label:"ชื่อลูกค้า **", req:true, placeholder:"49ร้าน สตอรี่ ทอยด์", half:true },
+    { key:"account_parent", label:"Account แม่", placeholder:"CZ0108", half:true },
+    { key:"phone", label:"เบอร์โทร", placeholder:"0628269514", half:true },
+    { key:"email", label:"อีเมล", placeholder:"email@company.com", half:true },
+    { key:"sales_owner", label:"เซลล์", placeholder:"WF", half:true },
+    { key:"business_type", label:"ประเภทธุรกิจ", placeholder:"ร้านค้าออนไลน์", half:true },
+    { key:"cod_percent", label:"COD %", placeholder:"2", half:true },
+    { key:"billing_cycle", label:"รอบชำระ", placeholder:"เงินสดวางบิลวันถัดไป", half:false },
+    { key:"tax_id", label:"Tax ID", placeholder:"0000000000000", half:true },
+    { key:"invoice_name", label:"ชื่อออกใบกำกับ", placeholder:"บริษัท...", half:true },
+    { key:"bank_name", label:"ธนาคาร", placeholder:"กสิกร", half:true },
+    { key:"bank_account", label:"เลขบัญชี", placeholder:"xxx-x-xxxxx-x", half:true },
+    { key:"bank_account_name", label:"ชื่อบัญชี", placeholder:"ชื่อ-นามสกุล", half:true },
+    { key:"line_group_id", label:"LINE Group ID", placeholder:"Cxxxxxxxx", half:true },
+    { key:"notes", label:"หมายเหตุ", placeholder:"เงื่อนไขพิเศษ...", half:false },
+  ];
+
+  return (
+    <div style={{ display:"flex", height:"calc(100vh - 48px)", overflow:"hidden" }}>
+      {/* LEFT: Customer list */}
+      <div style={{ width:300, borderRight:`1px solid ${colors.border}`, display:"flex", flexDirection:"column", background:colors.card }}>
+        <div style={{ padding:"16px 16px 10px", borderBottom:`1px solid ${colors.borderLight}` }}>
+          <div style={{ fontSize:16, fontWeight:700, color:colors.text, marginBottom:8 }}>ลูกค้า / ราคาขาย</div>
+          <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+            <input style={{ ...css.input, fontSize:12, padding:"7px 10px", flex:1 }}
+              placeholder="ค้นหา account/ชื่อ/เบอร์..." value={searchInput}
+              onChange={e=>setSearchInput(e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter") setSearch(searchInput); }} />
+            <button onClick={()=>setSearch(searchInput)} style={{ ...css.btnPrimary, width:"auto", padding:"7px 12px", fontSize:12 }}>ค้น</button>
+          </div>
+          <div style={{ display:"flex", gap:4 }}>
+            {["active","inactive",""].map(s => (
+              <button key={s} onClick={()=>setStatusFilter(s)}
+                style={{ flex:1, padding:"5px 4px", fontSize:11, borderRadius:6, border:"none", cursor:"pointer", fontFamily:font,
+                  background: statusFilter===s ? colors.primary : colors.borderLight,
+                  color: statusFilter===s ? "#fff" : colors.text }}>
+                {s==="active"?"ใช้งาน":s==="inactive"?"ปิด":"ทั้งหมด"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ flex:1, overflowY:"auto" }}>
+          <div onClick={()=>{setSelected(null);setShowAddForm(true);}}
+            style={{ padding:"10px 16px", borderBottom:`1px solid ${colors.borderLight}`, cursor:"pointer", display:"flex", alignItems:"center", gap:8, color:colors.primary, fontSize:13, fontWeight:600 }}
+            onMouseEnter={e=>e.currentTarget.style.background=colors.primaryLight} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+            + เพิ่มลูกค้าใหม่
+          </div>
+          {loading ? <div style={{ padding:20, textAlign:"center", color:colors.textMuted, fontSize:13 }}>กำลังโหลด...</div> :
+            customers.length === 0 ? <div style={{ padding:20, textAlign:"center", color:colors.textLight, fontSize:12 }}>ไม่พบลูกค้า</div> :
+            customers.map(c => (
+              <div key={c.id} onClick={()=>selectCustomer(c)}
+                style={{ padding:"10px 16px", borderBottom:`1px solid ${colors.borderLight}`, cursor:"pointer",
+                  background: selected?.id===c.id ? colors.primaryLight : "transparent" }}
+                onMouseEnter={e=>{ if(selected?.id!==c.id) e.currentTarget.style.background=colors.bg; }}
+                onMouseLeave={e=>{ if(selected?.id!==c.id) e.currentTarget.style.background="transparent"; }}>
+                <div style={{ fontSize:13, fontWeight:600, color: selected?.id===c.id ? colors.primary : colors.text }}>{c.account_code}</div>
+                <div style={{ fontSize:11, color:colors.textMuted, marginTop:2 }}>{c.customer_name}</div>
+                <div style={{ fontSize:10, color:colors.textLight }}>{c.phone}</div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+
+      {/* RIGHT: Detail panel */}
+      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+        {/* Add new customer form */}
+        {showAddForm && !selected && (
+          <div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+              <h3 style={{ fontSize:18, fontWeight:700 }}>เพิ่มลูกค้าใหม่</h3>
+              <button onClick={()=>setShowAddForm(false)} style={{ ...css.btnPrimary, width:"auto", padding:"6px 14px", fontSize:12, background:colors.border, color:colors.text }}>ยกเลิก</button>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              {FORM_FIELDS.map(f => (
+                <div key={f.key} style={{ gridColumn: f.half ? "auto" : "1/-1" }}>
+                  <label style={css.label}>{f.label}</label>
+                  {f.key==="payment_type" ? (
+                    <select style={css.input} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})}>
+                      <option value="cash">เงินสด</option><option value="credit">เครดิต</option>
+                    </select>
+                  ) : f.key==="status" ? (
+                    <select style={css.input} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})}>
+                      <option value="active">ใช้งาน</option><option value="inactive">ปิด</option>
+                    </select>
+                  ) : (
+                    <input style={css.input} placeholder={f.placeholder} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})} />
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop:16 }}>
+              <button onClick={handleSave} style={{ ...css.btnPrimary, width:"auto", padding:"10px 24px", fontSize:13 }}>บันทึก</button>
+            </div>
+          </div>
+        )}
+
+        {/* Customer detail */}
+        {selected && (
+          <div>
+            {/* Header */}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16 }}>
+              <div>
+                <div style={{ fontSize:20, fontWeight:700, color:colors.primary }}>{selected.account_code}</div>
+                <div style={{ fontSize:14, color:colors.text, marginTop:2 }}>{selected.customer_name}</div>
+                <div style={{ fontSize:12, color:colors.textMuted }}>{selected.phone} {selected.email ? `• ${selected.email}` : ""}</div>
+              </div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                <label style={{ padding:"7px 16px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.primary}`, background:"transparent", color:colors.primary, cursor: xlsxLoaded ? "pointer" : "default", fontFamily:font, fontWeight:500 }}>
+                  {importing ? "กำลัง Import..." : "Import ราคาขาย (.xlsx)"}
+                  <input type="file" accept=".xlsx" onChange={handleImportPricing} disabled={!xlsxLoaded||importing} style={{ display:"none" }} />
+                </label>
+                <button onClick={downloadTemplate} disabled={!xlsxLoaded}
+                  style={{ padding:"7px 16px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.primary}`, background:"transparent", color:colors.primary, cursor:"pointer", fontFamily:font, fontWeight:500 }}>
+                  ดาวน์โหลด Template
+                </button>
+              </div>
+            </div>
+
+            {importResult && (
+              <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:12,
+                background: importResult.error ? colors.dangerLight : colors.primaryLight,
+                color: importResult.error ? colors.danger : colors.primary, fontSize:13 }}>
+                {importResult.error ? `❌ ${importResult.error}` : `✅ Import สำเร็จ ${importResult.success} rates`}
+              </div>
+            )}
+
+            {/* Tabs */}
+            <div style={{ display:"flex", gap:4, marginBottom:16, borderBottom:`1px solid ${colors.border}`, paddingBottom:0 }}>
+              {[
+                { key:"info", label:"ข้อมูลลูกค้า" },
+                { key:"flash", label:"ราคาขาย Flash" },
+                { key:"dhl", label:"ราคาขาย DHL" },
+                { key:"surcharge", label:"Surcharge" },
+                { key:"sender", label:"Sender Mapping" },
+              ].map(t => (
+                <button key={t.key} onClick={()=>setTab(t.key)}
+                  style={{ padding:"8px 16px", fontSize:13, border:"none", cursor:"pointer", fontFamily:font, fontWeight:500,
+                    background: tab===t.key ? colors.primary : "transparent",
+                    color: tab===t.key ? "#fff" : colors.textMuted,
+                    borderRadius:"8px 8px 0 0", borderBottom: tab===t.key ? "none" : "transparent" }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab: ข้อมูลลูกค้า */}
+            {tab==="info" && (
+              <div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                  {FORM_FIELDS.map(f => (
+                    <div key={f.key} style={{ gridColumn: f.half ? "auto" : "1/-1" }}>
+                      <label style={css.label}>{f.label}</label>
+                      {f.key==="payment_type" ? (
+                        <select style={css.input} value={selected[f.key]||""} onChange={e=>setSelected({...selected,[f.key]:e.target.value})}>
+                          <option value="cash">เงินสด</option><option value="credit">เครดิต</option>
+                        </select>
+                      ) : f.key==="status" ? (
+                        <select style={css.input} value={selected[f.key]||"active"} onChange={e=>setSelected({...selected,[f.key]:e.target.value})}>
+                          <option value="active">ใช้งาน</option><option value="inactive">ปิด</option>
+                        </select>
+                      ) : (
+                        <input style={css.input} placeholder={f.placeholder} value={selected[f.key]||""} onChange={e=>setSelected({...selected,[f.key]:e.target.value})} />
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop:16 }}>
+                  <button onClick={async()=>{
+                    try { await supabase.from("wf_customers").update(selected, {id:selected.id}); alert("บันทึกสำเร็จ"); loadCustomers(); }
+                    catch(e) { alert("Error: "+e.message); }
+                  }} style={{ ...css.btnPrimary, width:"auto", padding:"10px 24px", fontSize:13 }}>บันทึก</button>
+                </div>
+              </div>
+            )}
+
+            {/* Tab: Flash pricing */}
+            {tab==="flash" && (
+              <div>
+                {loadingPricing ? <div style={{ textAlign:"center", color:colors.textMuted, padding:24 }}>กำลังโหลด...</div> :
+                  <PricingTable carrier="FLASH" zones={["BKK","UPC"]} />
+                }
+              </div>
+            )}
+
+            {/* Tab: DHL pricing */}
+            {tab==="dhl" && (
+              <div>
+                {loadingPricing ? <div style={{ textAlign:"center", color:colors.textMuted, padding:24 }}>กำลังโหลด...</div> :
+                  <PricingTable carrier="DHL" zones={["BKK","UPC_CE","UPC_NNS"]} />
+                }
+              </div>
+            )}
+
+            {/* Tab: Surcharge overrides */}
+            {tab==="surcharge" && (
+              <div>
+                <div style={{ marginBottom:12, fontSize:13, color:colors.textMuted }}>
+                  ราคา surcharge เฉพาะลูกค้านี้ — ถ้าไม่กำหนด ใช้ราคา default จาก carrier
+                </div>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                  <thead>
+                    <tr style={{ background:colors.bg }}>
+                      {["Carrier","Surcharge","ชื่อ","ราคาขาย (บาท)","เก็บไหม"].map(h => (
+                        <th key={h} style={{ padding:"6px 10px", border:`1px solid ${colors.border}`, fontWeight:600, fontSize:11, color:colors.textMuted, textAlign:"left" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {carrierSurcharges.map(cs => {
+                      const ov = surchargeOverrides.find(o => o.carrier_code===cs.carrier_code && o.surcharge_code===cs.surcharge_code);
+                      return (
+                        <tr key={`${cs.carrier_code}-${cs.surcharge_code}`}>
+                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}` }}>
+                            <Badge type={cs.carrier_code==="FLASH"?"warning":"info"}>{cs.carrier_code}</Badge>
+                          </td>
+                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}`, fontSize:11, color:colors.textMuted }}>{cs.surcharge_code}</td>
+                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}` }}>{cs.surcharge_name}</td>
+                          <td style={{ padding:"4px 6px", border:`1px solid ${colors.borderLight}` }}>
+                            <input type="number" defaultValue={ov?.sell_price ?? cs.default_sell}
+                              style={{ width:70, padding:"3px 6px", fontSize:11, border:`1px solid ${colors.border}`, borderRadius:4, textAlign:"right", fontFamily:font }}
+                              onBlur={async e=>{
+                                const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                                const payload={ customer_id:selected.id, account_code:selected.account_code, carrier_code:cs.carrier_code, surcharge_code:cs.surcharge_code, sell_price:parseFloat(e.target.value)||0, is_enabled: ov?.is_enabled??true };
+                                await fetch(`${SUPABASE_URL}/rest/v1/customer_surcharge_overrides`, { method:"POST", headers:{...supabaseHeaders(token),Prefer:"resolution=merge-duplicates"}, body:JSON.stringify(payload) });
+                                await loadCustomerPricing(selected.id, selected.account_code);
+                              }}
+                              onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+                            />
+                          </td>
+                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}`, textAlign:"center" }}>
+                            <input type="checkbox" defaultChecked={ov?.is_enabled??true}
+                              onChange={async e=>{
+                                const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                                const payload={ customer_id:selected.id, account_code:selected.account_code, carrier_code:cs.carrier_code, surcharge_code:cs.surcharge_code, sell_price:ov?.sell_price??cs.default_sell, is_enabled:e.target.checked };
+                                await fetch(`${SUPABASE_URL}/rest/v1/customer_surcharge_overrides`, { method:"POST", headers:{...supabaseHeaders(token),Prefer:"resolution=merge-duplicates"}, body:JSON.stringify(payload) });
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Tab: Sender mapping */}
+            {tab==="sender" && (
+              <div>
+                <div style={{ marginBottom:12, fontSize:13, color:colors.textMuted }}>
+                  ชื่อผู้ส่ง (Sender) ที่ใช้ mapping กลับมาเป็น account นี้ในไฟล์ KA
+                </div>
+                {senderMappings.map(m => (
+                  <div key={m.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
+                    <input style={{ ...css.input, flex:1 }} defaultValue={m.sender_name}
+                      onBlur={async e=>{
+                        const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                        await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping?id=eq.${m.id}`, { method:"PATCH", headers:supabaseHeaders(token), body:JSON.stringify({sender_name:e.target.value}) });
+                      }} />
+                    <Badge type="info">{m.carrier_code}</Badge>
+                    <span onClick={async()=>{
+                      const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                      await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping?id=eq.${m.id}`, { method:"DELETE", headers:supabaseHeaders(token) });
+                      setSenderMappings(prev=>prev.filter(x=>x.id!==m.id));
+                    }} style={{ color:colors.danger, cursor:"pointer", fontSize:12 }}>ลบ</span>
+                  </div>
+                ))}
+                <button onClick={async()=>{
+                  const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                  const res=await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping`, { method:"POST", headers:{...supabaseHeaders(token),Prefer:"return=representation"}, body:JSON.stringify({ customer_id:selected.id, account_code:selected.account_code, sender_name:"", carrier_code:"FLASH", is_active:true }) });
+                  const data=await res.json();
+                  if(Array.isArray(data)&&data[0]) setSenderMappings(prev=>[...prev,data[0]]);
+                }} style={{ ...css.btnPrimary, width:"auto", padding:"7px 16px", fontSize:12 }}>+ เพิ่ม Sender</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!selected && !showAddForm && (
+          <div style={{ textAlign:"center", padding:"60px 20px", color:colors.textLight }}>
+            <div style={{ fontSize:40, marginBottom:12 }}>◎</div>
+            <div style={{ fontSize:14 }}>เลือกลูกค้าจากรายการด้านซ้าย หรือกด + เพิ่มลูกค้าใหม่</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SURCHARGES PAGE — จัดการ Surcharge Master ต่อ carrier
+// ============================================================
+function SurchargesPage() {
+  const [surcharges, setSurcharges] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ carrier_code:"FLASH", surcharge_code:"", surcharge_name:"", calc_type:"fixed", default_cost:"0", default_sell:"0", notes:"" });
+
+  useEffect(() => { loadSurcharges(); }, []);
+
+  const loadSurcharges = async () => {
+    const data = await supabase.from("carrier_surcharges").select("*", { order: "carrier_code,sort_order" });
+    setSurcharges(Array.isArray(data) ? data : []);
+    setLoading(false);
+  };
+
+  const handleAdd = async () => {
+    try {
+      await supabase.from("carrier_surcharges").insert({
+        ...form, default_cost: parseFloat(form.default_cost)||0, default_sell: parseFloat(form.default_sell)||0,
+        sort_order: surcharges.filter(s=>s.carrier_code===form.carrier_code).length + 1,
+      });
+      setShowAdd(false);
+      setForm({ carrier_code:"FLASH", surcharge_code:"", surcharge_name:"", calc_type:"fixed", default_cost:"0", default_sell:"0", notes:"" });
+      loadSurcharges();
+    } catch(e) { alert("Error: "+e.message); }
+  };
+
+  const updateField = async (id, field, value) => {
+    const session = JSON.parse(localStorage.getItem("wf_session")||"null"); const token = session?.access_token;
+    await fetch(`${SUPABASE_URL}/rest/v1/carrier_surcharges?id=eq.${id}`, { method:"PATCH", headers:supabaseHeaders(token), body:JSON.stringify({ [field]: field.includes("cost")||field.includes("sell") ? parseFloat(value)||0 : value }) });
+    setSurcharges(prev => prev.map(s => s.id===id ? {...s,[field]:value} : s));
+  };
+
+  const grouped = ["FLASH","DHL"].reduce((acc, c) => {
+    acc[c] = surcharges.filter(s => s.carrier_code === c);
+    return acc;
+  }, {});
+
+  return (
+    <div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+        <div>
+          <h2 style={{ fontSize:22, fontWeight:700, letterSpacing:-0.3 }}>Surcharge Master</h2>
+          <div style={{ fontSize:13, color:colors.textMuted }}>จัดการค่าบริการเพิ่มเติมต่อ carrier — ราคา default ใช้กับทุกลูกค้าที่ไม่ได้ override</div>
+        </div>
+        <button onClick={()=>setShowAdd(!showAdd)} style={{ ...css.btnPrimary, width:"auto", padding:"10px 20px", fontSize:13 }}>
+          + เพิ่ม Surcharge
+        </button>
+      </div>
+
+      {showAdd && (
+        <div style={{ ...css.card, marginBottom:20, borderLeft:`3px solid ${colors.primary}`, borderRadius:0 }}>
+          <h3 style={{ fontSize:15, fontWeight:600, marginBottom:16 }}>เพิ่ม Surcharge ใหม่</h3>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12 }}>
+            <div>
+              <label style={css.label}>Carrier *</label>
+              <select style={css.input} value={form.carrier_code} onChange={e=>setForm({...form,carrier_code:e.target.value})}>
+                <option value="FLASH">FLASH</option><option value="DHL">DHL</option>
+              </select>
+            </div>
+            <div>
+              <label style={css.label}>Code * (ห้ามซ้ำ)</label>
+              <input style={css.input} placeholder="MY_SURCHARGE" value={form.surcharge_code} onChange={e=>setForm({...form,surcharge_code:e.target.value.toUpperCase()})} />
+            </div>
+            <div>
+              <label style={css.label}>ชื่อ *</label>
+              <input style={css.input} placeholder="ชื่อแสดงผล" value={form.surcharge_name} onChange={e=>setForm({...form,surcharge_name:e.target.value})} />
+            </div>
+            <div>
+              <label style={css.label}>วิธีคิด</label>
+              <select style={css.input} value={form.calc_type} onChange={e=>setForm({...form,calc_type:e.target.value})}>
+                <option value="fixed">Fixed (บาท/ชิ้น)</option><option value="percent">Percent (% ของ freight)</option>
+              </select>
+            </div>
+            <div>
+              <label style={css.label}>ราคาทุน default</label>
+              <input style={css.input} type="number" value={form.default_cost} onChange={e=>setForm({...form,default_cost:e.target.value})} />
+            </div>
+            <div>
+              <label style={css.label}>ราคาขาย default</label>
+              <input style={css.input} type="number" value={form.default_sell} onChange={e=>setForm({...form,default_sell:e.target.value})} />
+            </div>
+            <div style={{ gridColumn:"1/-1" }}>
+              <label style={css.label}>หมายเหตุ</label>
+              <input style={css.input} placeholder="หมายเหตุ" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} />
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:8, marginTop:16 }}>
+            <button onClick={handleAdd} style={{ ...css.btnPrimary, width:"auto", padding:"10px 24px", fontSize:13 }}>บันทึก</button>
+            <button onClick={()=>setShowAdd(false)} style={{ ...css.btnPrimary, width:"auto", padding:"10px 24px", fontSize:13, background:colors.border, color:colors.text }}>ยกเลิก</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? <div style={{ textAlign:"center", color:colors.textMuted, padding:24 }}>กำลังโหลด...</div> :
+        ["FLASH","DHL"].map(carrier => (
+          <div key={carrier} style={{ ...css.card, marginBottom:16 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+              <span style={{ background: carrier==="FLASH"?"#FFF3E0":"#FFFDE7", color: carrier==="FLASH"?"#E65100":"#F57F17", fontSize:12, fontWeight:600, padding:"4px 12px", borderRadius:6 }}>{carrier}</span>
+              <span style={{ fontSize:14, fontWeight:600 }}>Surcharge ({grouped[carrier]?.length || 0} รายการ)</span>
+            </div>
+            {(grouped[carrier]||[]).length === 0 ? (
+              <div style={{ textAlign:"center", color:colors.textLight, fontSize:12, padding:16 }}>ยังไม่มี surcharge</div>
+            ) : (
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:colors.bg }}>
+                    {["Code","ชื่อ","วิธีคิด","ราคาทุน default","ราคาขาย default","สถานะ",""].map(h => (
+                      <th key={h} style={{ padding:"6px 10px", border:`1px solid ${colors.border}`, fontWeight:600, fontSize:11, color:colors.textMuted, textAlign:"left" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(grouped[carrier]||[]).map(s => (
+                    <tr key={s.id} style={{ background:s.is_active?"transparent":colors.dangerLight+"40" }}>
+                      <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}`, fontFamily:"monospace", fontSize:11, color:colors.textMuted }}>{s.surcharge_code}</td>
+                      <td style={{ padding:"4px 6px", border:`1px solid ${colors.borderLight}` }}>
+                        <input defaultValue={s.surcharge_name} style={{ width:"100%", border:"none", background:"transparent", fontSize:12, fontFamily:font, outline:"none" }}
+                          onBlur={e=>updateField(s.id,"surcharge_name",e.target.value)} />
+                      </td>
+                      <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}` }}>
+                        <Badge type={s.calc_type==="fixed"?"info":"warning"}>{s.calc_type==="fixed"?"Fixed (฿/ชิ้น)":"Percent (%)"}</Badge>
+                      </td>
+                      <td style={{ padding:"4px 6px", border:`1px solid ${colors.borderLight}` }}>
+                        <input type="number" defaultValue={s.default_cost} style={{ width:70, border:"none", background:"transparent", fontSize:12, fontFamily:font, textAlign:"right", outline:"none" }}
+                          onBlur={e=>updateField(s.id,"default_cost",e.target.value)} />
+                      </td>
+                      <td style={{ padding:"4px 6px", border:`1px solid ${colors.borderLight}` }}>
+                        <input type="number" defaultValue={s.default_sell} style={{ width:70, border:"none", background:"transparent", fontSize:12, fontFamily:font, textAlign:"right", color:colors.primary, fontWeight:600, outline:"none" }}
+                          onBlur={e=>updateField(s.id,"default_sell",e.target.value)} />
+                      </td>
+                      <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}`, textAlign:"center" }}>
+                        <Badge type={s.is_active?"success":"default"} style={{ cursor:"pointer" }} onClick={()=>updateField(s.id,"is_active",!s.is_active)}>
+                          {s.is_active?"ใช้งาน":"ปิด"}
+                        </Badge>
+                      </td>
+                      <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}`, textAlign:"center" }}>
+                        <span onClick={async()=>{
+                          if(!confirm("ลบ surcharge นี้? จะกระทบลูกค้าที่ override ด้วย")) return;
+                          const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                          await fetch(`${SUPABASE_URL}/rest/v1/carrier_surcharges?id=eq.${s.id}`, { method:"DELETE", headers:supabaseHeaders(token) });
+                          loadSurcharges();
+                        }} style={{ color:colors.danger, cursor:"pointer", fontSize:11 }}>ลบ</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        ))
+      }
+    </div>
+  );
+}
+
 // ============================================================
 // MAIN APP
 // ============================================================
@@ -2088,6 +2985,8 @@ export default function App() {
   const pages = {
     dashboard: DashboardPage,
     customers: CustomersPage,
+    wf_customers: WFCustomersPage,
+    surcharges: SurchargesPage,
     orders: OrdersPage,
     invoices: InvoicesPage,
     expenses: ExpensesPage,
