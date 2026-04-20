@@ -2265,8 +2265,8 @@ function WFCustomersPage() {
           const rows = window.XLSX.utils.sheet_to_json(flashSheet, { defval: 0 });
           for (const row of rows) {
             if (!row["account_code**"] || row["account_code**"] !== selected.account_code) continue;
-            const zone = row["zone**
-(BKK/UPC)"] || row["zone**(BKK/UPC)"] || "";
+            const zoneKey = Object.keys(row).find(k => k.includes("zone"));
+            const zone = zoneKey ? String(row[zoneKey]) : "";
             if (!zone) continue;
             // Upsert pricing table
             const tUrl = `${SUPABASE_URL}/rest/v1/customer_pricing_tables`;
@@ -2302,8 +2302,8 @@ function WFCustomersPage() {
           const rows = window.XLSX.utils.sheet_to_json(dhlSheet, { defval: 0 });
           for (const row of rows) {
             if (!row["account_code**"] || row["account_code**"] !== selected.account_code) continue;
-            const zone = row["zone**
-(BKK/UPC_CE/UPC_NNS)"] || row["zone**(BKK/UPC_CE/UPC_NNS)"] || "";
+            const zoneKey = Object.keys(row).find(k => k.includes("zone"));
+            const zone = zoneKey ? String(row[zoneKey]) : "";
             if (!zone) continue;
             const tUrl = `${SUPABASE_URL}/rest/v1/customer_pricing_tables`;
             const tRes = await fetch(tUrl, {
@@ -2343,13 +2343,11 @@ function WFCustomersPage() {
     if (!window.XLSX || !selected) return;
     const wb = window.XLSX.utils.book_new();
     // Flash sheet
-    const flashHeaders = ["account_code**", "zone**
-(BKK/UPC)", ...Array.from({length:50},(_,i)=>i+1)];
+    const flashHeaders = ["account_code**", "zone**(BKK/UPC)", ...Array.from({length:50},(_,i)=>i+1)];
     const flashRows = ["BKK","UPC"].map(zone => {
       const t = pricingTables.find(t => t.carrier_code==="FLASH" && t.zone===zone);
       const rates = t ? (pricingRates[t.id] || []) : [];
-      const row = { "account_code**": selected.account_code, "zone**
-(BKK/UPC)": zone };
+      const row = { "account_code**": selected.account_code, "zone**(BKK/UPC)": zone };
       rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
       return row;
     });
@@ -2359,8 +2357,7 @@ function WFCustomersPage() {
     const dhlRows = ["BKK","UPC_CE","UPC_NNS"].map(zone => {
       const t = pricingTables.find(t => t.carrier_code==="DHL" && t.zone===zone);
       const rates = t ? (pricingRates[t.id] || []) : [];
-      const row = { "account_code**": selected.account_code, "zone**
-(BKK/UPC_CE/UPC_NNS)": zone };
+      const row = { "account_code**": selected.account_code, "zone**(BKK/UPC_CE/UPC_NNS)": zone };
       rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
       return row;
     });
