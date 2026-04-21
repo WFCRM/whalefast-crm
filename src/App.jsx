@@ -2546,9 +2546,94 @@ function WFCustomersPage() {
         {/* Add new customer form */}
         {showAddForm && !selected && (
           <div>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:8 }}>
               <h3 style={{ fontSize:18, fontWeight:700 }}>เพิ่มลูกค้าใหม่</h3>
-              <button onClick={()=>setShowAddForm(false)} style={{ ...css.btnPrimary, width:"auto", padding:"6px 14px", fontSize:12, background:colors.border, color:colors.text }}>ยกเลิก</button>
+              <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+                <button onClick={() => {
+                  if (!window.XLSX) return;
+                  const wb = window.XLSX.utils.book_new();
+                  const headers = ["account_code**","customer_name**","account_parent","status","phone","email","address","business_type","product_type","sales_owner","customer_category","payment_type","billing_cycle","cod_percent**","freelance_commission","tax_id","invoice_name","bank_name","bank_account","bank_account_name","line_group_id","notes"];
+                  const sample = [["CZ0108-49","49ร้าน สตอรี่ ทอยด์","CZ0108","active","0628269514","","","ร้านค้าออนไลน์","","WF","บริษัท","cash","เงินสดวางบิลวันถัดไป","2","","","","","","","",""]];
+                  const ws = window.XLSX.utils.aoa_to_sheet([headers, ...sample]);
+                  ws["!cols"] = headers.map(() => ({ wch: 18 }));
+                  window.XLSX.utils.book_append_sheet(wb, ws, "ลูกค้า");
+                  const instr = window.XLSX.utils.aoa_to_sheet([
+                    ["Column","คำอธิบาย"],
+                    ["account_code**","รหัส account เช่น CZ0108-49 (จำเป็น)"],
+                    ["customer_name**","ชื่อลูกค้า (จำเป็น)"],
+                    ["account_parent","account แม่ เช่น CZ0108, DHL"],
+                    ["status","active หรือ inactive"],
+                    ["payment_type","cash หรือ credit"],
+                    ["cod_percent**","% COD เช่น 2, 1.7, 1.5 (จำเป็น)"],
+                    ["billing_cycle","รอบชำระ เช่น เงินสดวางบิลวันถัดไป"],
+                    ["line_group_id","LINE Group ID เช่น Cxxxxxxxx"],
+                    ["","** = จำเป็นต้องกรอก"],
+                  ]);
+                  window.XLSX.utils.book_append_sheet(wb, instr, "คำอธิบาย");
+                  window.XLSX.writeFile(wb, "WF_Customer_Template.xlsx");
+                }} disabled={!xlsxLoaded}
+                  style={{ padding:"7px 14px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.primary}`, background:"transparent", color:colors.primary, cursor:xlsxLoaded?"pointer":"default", fontFamily:font, fontWeight:500 }}>
+                  📥 Download Template
+                </button>
+                <label style={{ padding:"7px 14px", fontSize:12, borderRadius:8, border:"1.5px solid #2196f3", background:"transparent", color:"#2196f3", cursor:xlsxLoaded?"pointer":"default", fontFamily:font, fontWeight:500 }}>
+                  {importing==="customers"?"กำลัง Import...":"📤 Import จาก Excel"}
+                  <input type="file" accept=".xlsx" disabled={!xlsxLoaded||importing==="customers"} style={{ display:"none" }}
+                    onChange={async (e) => {
+                      const file = e.target.files[0];
+                      if (!file || !window.XLSX) return;
+                      setImporting("customers");
+                      const session = JSON.parse(localStorage.getItem("wf_session")||"null");
+                      const token = session?.access_token;
+                      const reader = new FileReader();
+                      reader.onload = async (ev) => {
+                        try {
+                          const wb2 = window.XLSX.read(ev.target.result, { type:"array" });
+                          const ws2 = wb2.Sheets["ลูกค้า"] || wb2.Sheets[wb2.SheetNames[0]];
+                          const rows = window.XLSX.utils.sheet_to_json(ws2, { defval:"" });
+                          let inserted = 0, skipped = 0;
+                          for (const row of rows) {
+                            const ac = String(row["account_code**"]||row["account_code"]||"").trim();
+                            const nm = String(row["customer_name**"]||row["customer_name"]||"").trim();
+                            if (!ac || !nm) { skipped++; continue; }
+                            const payload = {
+                              account_code: ac, customer_name: nm,
+                              account_parent: String(row["account_parent"]||"CZ0108").trim(),
+                              status: String(row["status"]||"active").trim(),
+                              phone: String(row["phone"]||"").trim(),
+                              email: String(row["email"]||"").trim(),
+                              address: String(row["address"]||"").trim(),
+                              business_type: String(row["business_type"]||"").trim(),
+                              product_type: String(row["product_type"]||"").trim(),
+                              sales_owner: String(row["sales_owner"]||"").trim(),
+                              customer_category: String(row["customer_category"]||"").trim(),
+                              payment_type: String(row["payment_type"]||"cash").trim(),
+                              billing_cycle: String(row["billing_cycle"]||"").trim(),
+                              cod_percent: parseFloat(row["cod_percent**"]||row["cod_percent"]||2)||2,
+                              tax_id: String(row["tax_id"]||"").trim(),
+                              invoice_name: String(row["invoice_name"]||"").trim(),
+                              bank_name: String(row["bank_name"]||"").trim(),
+                              bank_account: String(row["bank_account"]||"").trim(),
+                              bank_account_name: String(row["bank_account_name"]||"").trim(),
+                              line_group_id: String(row["line_group_id"]||"").trim(),
+                              notes: String(row["notes"]||"").trim(),
+                            };
+                            const res = await fetch(`${SUPABASE_URL}/rest/v1/wf_customers`, {
+                              method:"POST",
+                              headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates" },
+                              body: JSON.stringify(payload),
+                            });
+                            if (res.ok||res.status===201||res.status===200) inserted++; else skipped++;
+                          }
+                          alert(`✅ Import ${inserted} ลูกค้า${skipped>0?" | ข้าม "+skipped+" rows":""}`);
+                          loadCustomers();
+                        } catch(err) { alert("Error: "+err.message); }
+                        setImporting(null); e.target.value = "";
+                      };
+                      reader.readAsArrayBuffer(file);
+                    }}/>
+                </label>
+                <button onClick={()=>setShowAddForm(false)} style={{ ...css.btnPrimary, width:"auto", padding:"6px 14px", fontSize:12, background:colors.border, color:colors.text }}>ยกเลิก</button>
+              </div>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
               {FORM_FIELDS.map(f => (
