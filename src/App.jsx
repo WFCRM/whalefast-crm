@@ -2525,10 +2525,31 @@ function WFCustomersPage() {
           </div>
         </div>
         <div style={{ flex:1, overflowY:"auto" }}>
-          <div onClick={()=>{setSelected(null);setShowAddForm(true);}}
-            style={{ padding:"10px 16px", borderBottom:`1px solid ${colors.borderLight}`, cursor:"pointer", display:"flex", alignItems:"center", gap:8, color:colors.primary, fontSize:13, fontWeight:600 }}
-            onMouseEnter={e=>e.currentTarget.style.background=colors.primaryLight} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-            + เพิ่มลูกค้าใหม่
+          <div style={{ padding:"8px 16px", borderBottom:`1px solid ${colors.borderLight}`, display:"flex", gap:6 }}>
+            <div onClick={()=>{setSelected(null);setShowAddForm(true);}}
+              style={{ flex:1, padding:"8px 10px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:colors.primary, fontSize:12, fontWeight:600, border:`1.5px solid ${colors.primary}` }}
+              onMouseEnter={e=>e.currentTarget.style.background=colors.primaryLight} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+              + เพิ่มลูกค้าใหม่
+            </div>
+            <button onClick={async()=>{
+              if(!window.XLSX) return;
+              const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+              // fetch all customers
+              const res=await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=*&order=account_code.asc&limit=1000`,{headers:supabaseHeaders(token)});
+              const data=await res.json();
+              if(!Array.isArray(data)||data.length===0){alert("ไม่มีข้อมูลลูกค้า");return;}
+              const headers=["account_code","customer_name","account_parent","status","phone","email","address","business_type","product_type","sales_owner","customer_category","payment_type","billing_cycle","cod_percent","tax_id","invoice_name","bank_name","bank_account","bank_account_name","line_group_id","notes"];
+              const rows=data.map(c=>headers.map(h=>c[h]||""));
+              const ws=window.XLSX.utils.aoa_to_sheet([headers,...rows]);
+              ws["!cols"]=headers.map(()=>({wch:18}));
+              const wb=window.XLSX.utils.book_new();
+              window.XLSX.utils.book_append_sheet(wb,ws,"ลูกค้า");
+              window.XLSX.writeFile(wb,`WF_Customers_${new Date().toISOString().slice(0,10)}.xlsx`);
+            }} disabled={!xlsxLoaded}
+              style={{ padding:"8px 10px", borderRadius:8, border:`1.5px solid ${colors.info||"#2196f3"}`, background:"transparent", color:colors.info||"#2196f3", cursor:"pointer", fontSize:11, fontFamily:font, fontWeight:500 }}
+              title="Export ข้อมูลลูกค้าทั้งหมด">
+              📥 Export
+            </button>
           </div>
           {loading ? <div style={{ padding:20, textAlign:"center", color:colors.textMuted, fontSize:13 }}>กำลังโหลด...</div> :
             customers.length === 0 ? <div style={{ padding:20, textAlign:"center", color:colors.textLight, fontSize:12 }}>ไม่พบลูกค้า</div> :
@@ -2623,12 +2644,12 @@ function WFCustomersPage() {
                               line_group_id: String(row["line_group_id"]||"").trim(),
                               notes: String(row["notes"]||"").trim(),
                             };
-                            const res = await fetch(`${SUPABASE_URL}/rest/v1/wf_customers`, {
+                            const res = await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?on_conflict=account_code`, {
                               method:"POST",
-                              headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates" },
+                              headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates,return=minimal" },
                               body: JSON.stringify(payload),
                             });
-                            if (res.ok||res.status===201||res.status===200) inserted++; else skipped++;
+                            if (res.ok||res.status===201||res.status===200||res.status===204) inserted++; else { skipped++; }
                           }
                           alert(`✅ Import ${inserted} ลูกค้า${skipped>0?" | ข้าม "+skipped+" rows":""}`);
                           loadCustomers();
