@@ -2344,15 +2344,21 @@ function WFCustomersPage() {
   const downloadTemplate = () => {
     if (!window.XLSX || !selected) return;
     const wb = window.XLSX.utils.book_new();
-    // Flash sheet
-    const flashHeaders = ["account_code**", "zone**(BKK/UPC)", ...Array.from({length:50},(_,i)=>i+1)];
-    const flashRows = ["BKK","UPC"].map(zone => {
-      const t = pricingTables.find(t => t.carrier_code==="FLASH" && t.zone===zone);
-      const rates = t ? (pricingRates[t.id] || []) : [];
-      const row = { "account_code**": selected.account_code, "zone**(BKK/UPC)": zone };
-      rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
-      return row;
-    });
+    // Flash sheet — แสดงทุก service_type ที่มี + แถว STD/BULKY/FRUIT ว่างไว้สำหรับเพิ่ม
+    const flashHeaders = ["account_code**", "service_type**(STD/BULKY/FRUIT)", "zone**(BKK/UPC)", ...Array.from({length:50},(_,i)=>i+1)];
+    const flashSvcTypes = [...new Set(pricingTables.filter(t=>t.carrier_code==="FLASH").map(t=>t.service_type||"STD"))];
+    // ถ้าไม่มีข้อมูลเลย ใส่ STD ว่างไว้
+    const svcToShow = flashSvcTypes.length > 0 ? flashSvcTypes : ["STD"];
+    const flashRows = [];
+    for (const svc of svcToShow) {
+      for (const zone of ["BKK","UPC"]) {
+        const t = pricingTables.find(t => t.carrier_code==="FLASH" && (t.service_type||"STD")===svc && t.zone===zone);
+        const rates = t ? (pricingRates[t.id]||[]) : [];
+        const row = { "account_code**": selected.account_code, "service_type**(STD/BULKY/FRUIT)": svc, "zone**(BKK/UPC)": zone };
+        rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
+        flashRows.push(row);
+      }
+    }
     const ws1 = window.XLSX.utils.json_to_sheet(flashRows, { header: flashHeaders });
     window.XLSX.utils.book_append_sheet(wb, ws1, "ราคาขาย Flash");
     // DHL sheet
@@ -3029,6 +3035,7 @@ function SellPricingPage() {
   const [searchInput, setSearchInput] = useState("");
   const [selected, setSelected] = useState(null);
   const [tab, setTab] = useState("flash");
+  const [flashServiceType, setFlashServiceType] = useState("STD"); // STD, BULKY, FRUIT
   const [pricingTables, setPricingTables] = useState([]);
   const [pricingRates, setPricingRates] = useState({});
   const [surchargeOverrides, setSurchargeOverrides] = useState([]);
@@ -3120,9 +3127,12 @@ function SellPricingPage() {
             const zoneKey = Object.keys(row).find(k => k.includes("zone"));
             const zone = zoneKey ? String(row[zoneKey]).trim() : "";
             if (!zone || !zones.includes(zone)) continue;
+            // อ่าน service_type จาก column (default STD สำหรับ Flash)
+            const svcKey = Object.keys(row).find(k => k.includes("service_type"));
+            const serviceType = (carrierCode==="FLASH" && svcKey) ? String(row[svcKey]).trim().toUpperCase() : "STD";
             const tRes = await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_tables`, {
               method:"POST", headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates,return=representation" },
-              body: JSON.stringify({ customer_id:selected.id, account_code:selected.account_code, carrier_code:carrierCode, zone, is_active:true }),
+              body: JSON.stringify({ customer_id:selected.id, account_code:selected.account_code, carrier_code:carrierCode, service_type:serviceType, zone, is_active:true }),
             });
             const tData = await tRes.json();
             const tableId = Array.isArray(tData) ? tData[0]?.id : tData?.id;
@@ -3170,15 +3180,15 @@ function SellPricingPage() {
     window.XLSX.writeFile(wb, `${selected.account_code}_pricing.xlsx`);
   };
 
-  const PricingGrid = ({ carrier, zones }) => {
+  const PricingGrid = ({ carrier, zones, serviceType = "STD" }) => {
     const [editCell, setEditCell] = useState(null);
     const maxKg = carrier==="FLASH" ? 50 : 30;
     const getRate = (tid, kg) => (pricingRates[tid]||[]).find(r=>r.weight_kg===kg)?.sell_price||0;
     const ensureTable = async (zone) => {
-      const existing = pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone);
+      const existing = pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone&&(t.service_type||"STD")===serviceType);
       if (existing) return existing.id;
       const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-      const res=await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_tables`,{method:"POST",headers:{...supabaseHeaders(token),Prefer:"return=representation"},body:JSON.stringify({customer_id:selected.id,account_code:selected.account_code,carrier_code:carrier,zone,is_active:true})});
+      const res=await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_tables`,{method:"POST",headers:{...supabaseHeaders(token),Prefer:"return=representation"},body:JSON.stringify({customer_id:selected.id,account_code:selected.account_code,carrier_code:carrier,service_type:serviceType,zone,is_active:true})});
       const data=await res.json(); const t=Array.isArray(data)?data[0]:data;
       if(t?.id){setPricingTables(prev=>[...prev,t]);setPricingRates(prev=>({...prev,[t.id]:[]}));return t.id;}
       return null;
@@ -3206,7 +3216,7 @@ function SellPricingPage() {
             <tr key={kg} style={{background:kg%2===0?"#fafafa":"white"}}>
               <td style={{padding:"2px 8px",border:`1px solid ${colors.borderLight}`,fontWeight:600,textAlign:"center",fontSize:11}}>{kg}</td>
               {zones.map(zone=>{
-                const t=pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone);
+                const t=pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone&&(t.service_type||"STD")===serviceType);
                 const val=t?getRate(t.id,kg):0; const ck=`${carrier}-${zone}-${kg}`;
                 return <td key={zone} style={{padding:"1px 2px",border:`1px solid ${colors.borderLight}`}}>
                   {editCell===ck?(
@@ -3301,7 +3311,40 @@ function SellPricingPage() {
 
             {loadingPricing?<div style={{textAlign:"center",color:colors.textMuted,padding:24}}>กำลังโหลด...</div>:(
               <>
-                {tab==="flash"&&<PricingGrid carrier="FLASH" zones={["BKK","UPC"]}/>}
+                {tab==="flash"&&(
+                  <div>
+                    {/* Service type selector — แสดงเสมอ 3 ประเภท */}
+                    <div style={{display:"flex",gap:6,marginBottom:14,alignItems:"center"}}>
+                      <span style={{fontSize:12,color:colors.textMuted,marginRight:4}}>ประเภทบริการ:</span>
+                      {[
+                        {key:"STD",   label:"มาตรฐาน",         color:"#1a6b4f"},
+                        {key:"BULKY", label:"พัสดุขนาดใหญ่",   color:"#e8913a"},
+                        {key:"FRUIT", label:"ผลไม้",            color:"#8e44ad"},
+                      ].map(({key,label,color})=>{
+                        const hasData = pricingTables.some(t=>t.carrier_code==="FLASH"&&(t.service_type||"STD")===key);
+                        const isActive = flashServiceType===key;
+                        return (
+                          <button key={key} onClick={()=>setFlashServiceType(key)}
+                            style={{padding:"6px 14px",fontSize:12,borderRadius:6,
+                              border:`1.5px solid ${isActive?color:colors.border}`,
+                              background:isActive?color:"transparent",
+                              color:isActive?"#fff":hasData?color:colors.textLight,
+                              cursor:"pointer",fontFamily:font,fontWeight:500,
+                              position:"relative"}}>
+                            {label}
+                            {hasData&&!isActive&&<span style={{position:"absolute",top:-4,right:-4,width:8,height:8,borderRadius:"50%",background:color,border:"1.5px solid white"}}/>}
+                          </button>
+                        );
+                      })}
+                      <span style={{fontSize:11,color:colors.textLight,marginLeft:4}}>
+                        {pricingTables.some(t=>t.carrier_code==="FLASH"&&(t.service_type||"STD")===flashServiceType)
+                          ? "✓ มีราคาอยู่แล้ว — คลิกตัวเลขเพื่อแก้ไข"
+                          : "ยังไม่มีราคา — คลิกตัวเลขเพื่อเพิ่มได้เลย"}
+                      </span>
+                    </div>
+                    <PricingGrid carrier="FLASH" zones={["BKK","UPC"]} serviceType={flashServiceType}/>
+                  </div>
+                )}
                 {tab==="dhl"&&<PricingGrid carrier="DHL" zones={["BKK","UPC_CE","UPC_NNS"]}/>}
                 {tab==="surcharge"&&(
                   <div>
