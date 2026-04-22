@@ -2152,6 +2152,7 @@ function WFCustomersPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
 
+  const [customerStats, setCustomerStats] = useState({ total:0, active:0, inactive:0 });
   const [form, setForm] = useState({
     account_code:"", account_parent:"CZ0108", customer_name:"", status:"active",
     phone:"", email:"", address:"", business_type:"", product_type:"",
@@ -2174,6 +2175,18 @@ function WFCustomersPage() {
     setLoading(true);
     const session = JSON.parse(localStorage.getItem("wf_session") || "null");
     const token = session?.access_token;
+    // Load stats
+    const [rAll, rActive, rInactive] = await Promise.all([
+      fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id`, { headers: supabaseHeaders(token) }),
+      fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&status=eq.active`, { headers: supabaseHeaders(token) }),
+      fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&status=eq.inactive`, { headers: supabaseHeaders(token) }),
+    ]);
+    const [dAll, dActive, dInactive] = await Promise.all([rAll.json(), rActive.json(), rInactive.json()]);
+    setCustomerStats({
+      total: Array.isArray(dAll) ? dAll.length : 0,
+      active: Array.isArray(dActive) ? dActive.length : 0,
+      inactive: Array.isArray(dInactive) ? dInactive.length : 0,
+    });
     let url = `${SUPABASE_URL}/rest/v1/wf_customers?select=*&order=account_code.asc`;
     if (statusFilter) url += `&status=eq.${statusFilter}`;
     if (search) url += `&or=(account_code.ilike.*${search}*,customer_name.ilike.*${search}*,phone.ilike.*${search}*)`;
@@ -2482,20 +2495,20 @@ function WFCustomersPage() {
 
   // Customer form fields
   const FORM_FIELDS = [
-    { key:"account_code", label:"Account Code **", req:true, placeholder:"CZ0108-49", half:true },
-    { key:"customer_name", label:"ชื่อลูกค้า **", req:true, placeholder:"49ร้าน สตอรี่ ทอยด์", half:true },
-    { key:"account_parent", label:"Account แม่", placeholder:"CZ0108", half:true },
-    { key:"phone", label:"เบอร์โทร", placeholder:"0628269514", half:true },
-    { key:"email", label:"อีเมล", placeholder:"email@company.com", half:true },
-    { key:"sales_owner", label:"เซลล์", placeholder:"WF", half:true },
-    { key:"business_type", label:"ประเภทธุรกิจ", placeholder:"ร้านค้าออนไลน์", half:true },
-    { key:"cod_percent", label:"COD %", placeholder:"2", half:true },
-    { key:"billing_cycle", label:"รอบชำระ", placeholder:"เงินสดวางบิลวันถัดไป", half:false },
-    { key:"tax_id", label:"Tax ID", placeholder:"0000000000000", half:true },
-    { key:"invoice_name", label:"ชื่อออกใบกำกับ", placeholder:"บริษัท...", half:true },
-    { key:"bank_name", label:"ธนาคาร", placeholder:"กสิกร", half:true },
-    { key:"bank_account", label:"เลขบัญชี", placeholder:"xxx-x-xxxxx-x", half:true },
-    { key:"bank_account_name", label:"ชื่อบัญชี", placeholder:"ชื่อ-นามสกุล", half:true },
+    { key:"account_code", label:"Account Code **", req:true, placeholder:"เช่น CZ0108-49", half:true },
+    { key:"customer_name", label:"ชื่อลูกค้า **", req:true, placeholder:"ชื่อลูกค้า", half:true },
+    { key:"account_parent", label:"Account แม่", placeholder:"เช่น CZ0108, DHL", half:true },
+    { key:"phone", label:"เบอร์โทร", placeholder:"เบอร์โทรผู้ติดต่อ", half:true },
+    { key:"email", label:"อีเมล", placeholder:"อีเมลผู้ติดต่อ", half:true },
+    { key:"sales_owner", label:"เซลล์", placeholder:"ชื่อเซลล์", half:true },
+    { key:"business_type", label:"ประเภทธุรกิจ", placeholder:"เช่น ร้านค้าออนไลน์", half:true },
+    { key:"cod_percent", label:"COD %", placeholder:"เช่น 2, 1.7, 1.5", half:true },
+    { key:"billing_cycle", label:"รอบชำระ", placeholder:"เช่น เงินสดวางบิลวันถัดไป", half:false },
+    { key:"tax_id", label:"Tax ID", placeholder:"เลขประจำตัวผู้เสียภาษี 13 หลัก", half:true },
+    { key:"invoice_name", label:"ชื่อออกใบกำกับ", placeholder:"ชื่อบริษัท/บุคคล", half:true },
+    { key:"bank_name", label:"ธนาคาร", placeholder:"ชื่อธนาคาร", half:true },
+    { key:"bank_account", label:"เลขบัญชี", placeholder:"เลขบัญชีธนาคาร", half:true },
+    { key:"bank_account_name", label:"ชื่อบัญชี", placeholder:"ชื่อเจ้าของบัญชี", half:true },
     { key:"line_group_id", label:"LINE Group ID", placeholder:"Cxxxxxxxx", half:true },
     { key:"notes", label:"หมายเหตุ", placeholder:"เงื่อนไขพิเศษ...", half:false },
   ];
@@ -2506,6 +2519,18 @@ function WFCustomersPage() {
       <div style={{ width:300, borderRight:`1px solid ${colors.border}`, display:"flex", flexDirection:"column", background:colors.card }}>
         <div style={{ padding:"16px 16px 10px", borderBottom:`1px solid ${colors.borderLight}` }}>
           <div style={{ fontSize:16, fontWeight:700, color:colors.text, marginBottom:8 }}>ลูกค้า / ราคาขาย</div>
+          <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+            {[
+              { label:"ทั้งหมด", value:customerStats.total, color:colors.text, bg:colors.bg },
+              { label:"ใช้งาน", value:customerStats.active, color:colors.primary, bg:colors.primaryLight },
+              { label:"ปิด", value:customerStats.inactive, color:colors.danger, bg:colors.dangerLight },
+            ].map(s=>(
+              <div key={s.label} style={{ flex:1, padding:"6px 4px", borderRadius:8, background:s.bg, textAlign:"center" }}>
+                <div style={{ fontSize:18, fontWeight:700, color:s.color }}>{s.value}</div>
+                <div style={{ fontSize:10, color:colors.textMuted }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
           <div style={{ display:"flex", gap:6, marginBottom:8 }}>
             <input style={{ ...css.input, fontSize:12, padding:"7px 10px", flex:1 }}
               placeholder="ค้นหา account/ชื่อ/เบอร์..." value={searchInput}
@@ -2559,10 +2584,26 @@ function WFCustomersPage() {
                   background: selected?.id===c.id ? colors.primaryLight : "transparent" }}
                 onMouseEnter={e=>{ if(selected?.id!==c.id) e.currentTarget.style.background=colors.bg; }}
                 onMouseLeave={e=>{ if(selected?.id!==c.id) e.currentTarget.style.background="transparent"; }}>
-                <div style={{ fontSize:13, fontWeight:600, color: selected?.id===c.id ? colors.primary : colors.text }}>{c.account_code}</div>
-                <div style={{ fontSize:11, color:colors.textMuted, marginTop:2 }}>{c.customer_name}</div>
-                <div style={{ fontSize:10, color:colors.textLight }}>{c.phone}</div>
-              </div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:600, color: selected?.id===c.id ? colors.primary : colors.text }}>{c.account_code}</div>
+                    <div style={{ fontSize:11, color:colors.textMuted, marginTop:2 }}>{c.customer_name}</div>
+                    <div style={{ fontSize:10, color:colors.textLight }}>{c.phone}</div>
+                  </div>
+                  <span onClick={async e=>{
+                    e.stopPropagation();
+                    if(!confirm(`ลบ ${c.account_code} - ${c.customer_name}?
+ข้อมูลราคาขายและ mapping จะถูกลบด้วย`)) return;
+                    const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                    await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?id=eq.${c.id}`,{method:"DELETE",headers:supabaseHeaders(token)});
+                    if(selected?.id===c.id) setSelected(null);
+                    loadCustomers();
+                  }} style={{ color:colors.danger, cursor:"pointer", fontSize:14, padding:"2px 4px", opacity:0.5, flexShrink:0 }}
+                    onMouseEnter={e=>e.target.style.opacity="1"} onMouseLeave={e=>e.target.style.opacity="0.5"}
+                    title="ลบลูกค้า">
+                    ✕
+                  </span>
+                </div>
             ))
           }
         </div>
@@ -2622,12 +2663,17 @@ function WFCustomersPage() {
                             const ac = String(row["account_code**"]||row["account_code"]||"").trim();
                             const nm = String(row["customer_name**"]||row["customer_name"]||"").trim();
                             if (!ac || !nm) { skipped++; continue; }
+                            // Helper: ถ้าค่าเหมือน placeholder ให้ใช้ "" แทน
+                            const cleanVal = (v, placeholders=[]) => {
+                              const s = String(v||"").trim();
+                              return placeholders.includes(s) ? "" : s;
+                            };
                             const payload = {
                               account_code: ac, customer_name: nm,
-                              account_parent: String(row["account_parent"]||"CZ0108").trim(),
-                              status: String(row["status"]||"active").trim(),
-                              phone: String(row["phone"]||"").trim(),
-                              email: String(row["email"]||"").trim(),
+                              account_parent: cleanVal(row["account_parent"], ["เช่น CZ0108, DHL"]) || "CZ0108",
+                              status: cleanVal(row["status"], ["active","inactive"]) || "active",
+                              phone: cleanVal(row["phone"], ["เบอร์โทรผู้ติดต่อ","0628269514"]),
+                              email: cleanVal(row["email"], ["อีเมลผู้ติดต่อ","email@company.com"]),
                               address: String(row["address"]||"").trim(),
                               business_type: String(row["business_type"]||"").trim(),
                               product_type: String(row["product_type"]||"").trim(),
