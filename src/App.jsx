@@ -1858,6 +1858,512 @@ function CostPricingPage() {
 }
 
 // ============================================================
+// SELL PRICING PAGE — ราคาขาย
+// ============================================================
+
+const SELL_CARRIER_TABS = [
+  { key:"FLASH", label:"Flash", icon:"⚡", color:C.amber,
+    services:[
+      {key:"STD",   label:"มาตรฐาน"},
+      {key:"STD100",label:"100cm"},
+      {key:"BULKY", label:"Bulky"},
+      {key:"FRUIT", label:"ผลไม้"},
+    ]
+  },
+  { key:"DHL", label:"DHL", icon:"📦", color:C.blue,
+    services:[{key:"ECO",label:"ECO"},{key:"PDO",label:"PDO"}]
+  },
+  { key:"SPX", label:"SPX", icon:"🛍", color:C.red,
+    services:[{key:"STD",label:"มาตรฐาน"}]
+  },
+];
+
+const SELL_ROUTE_GROUPS = [
+  { origin:"BKK", label:"BKK",     color:C.amber,  bg:C.amberBg,
+    routes:[{key:"BKK_BKK",label:"→ BKK"},{key:"BKK_OTHER",label:"→ ต่างจว."}] },
+  { origin:"C",   label:"Central", color:C.blue,   bg:C.blueBg,
+    routes:[{key:"C_BKK",label:"→ BKK"},{key:"C_OTHER",label:"→ ต่างจว."},{key:"C_WITHIN",label:"→ ใน C"}] },
+  { origin:"N",   label:"North",   color:C.green,  bg:C.greenBg,
+    routes:[{key:"N_BKK",label:"→ BKK"},{key:"N_OTHER",label:"→ ต่างจว."},{key:"N_WITHIN",label:"→ ใน N"}] },
+  { origin:"NE",  label:"NE",      color:C.purple||"#7C3AED", bg:C.purpleBg||"#EDE9FE",
+    routes:[{key:"NE_BKK",label:"→ BKK"},{key:"NE_OTHER",label:"→ ต่างจว."},{key:"NE_WITHIN",label:"→ ใน NE"}] },
+  { origin:"S",   label:"South",   color:C.teal||"#0891B2",   bg:C.tealBg||"#ECFEFF",
+    routes:[{key:"S_BKK",label:"→ BKK"},{key:"S_OTHER",label:"→ ต่างจว."},{key:"S_WITHIN",label:"→ ใน S"}] },
+];
+
+// All 14 route keys in order
+const ALL_ROUTES = SELL_ROUTE_GROUPS.flatMap(g => g.routes.map(r => r.key));
+
+// ── Customer Pricing Table ────────────────────────────────
+function CustomerSellTable({ customer, carrier, serviceType, defaultRows, overrides, setOverrides, xlsxReady }) {
+  const [saving, setSaving] = useState(false);
+  const [viewMode, setViewMode] = useState("all");
+
+  const getDefault = (kg, route) => {
+    const row = defaultRows.find(r => r.weight === kg);
+    if (!row) return 0;
+    const field = route.toLowerCase() + "_price";
+    return row[field] || 0;
+  };
+
+  const getOverride = (kg, route) => {
+    return overrides.find(o => o.weight === kg && o.route === route)?.sell_price ?? null;
+  };
+
+  const getEffective = (kg, route) => {
+    const ov = getOverride(kg, route);
+    return ov !== null ? ov : getDefault(kg, route);
+  };
+
+  const handleCellSave = async (kg, route, price) => {
+    const def = getDefault(kg, route);
+    setSaving(true);
+    try {
+      // Upsert override
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/customer_rate_overrides`, {
+        method: "POST",
+        headers: { ...sbHeaders(getToken()), Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify({
+          customer_id: customer.id,
+          account_code: customer.account_code,
+          carrier_code: carrier,
+          service_type: serviceType,
+          weight: kg,
+          route: route,
+          sell_price: price,
+          is_active: true,
+        }),
+      });
+      const data = await res.json();
+      const saved = Array.isArray(data) ? data[0] : data;
+      if (saved?.id) {
+        setOverrides(prev => {
+          const filtered = prev.filter(o => !(o.weight === kg && o.route === route));
+          // If price == default, remove override (treat as default)
+          if (price === def) return filtered;
+          return [...filtered, saved];
+        });
+      }
+    } catch(e) { alert("บันทึกไม่สำเร็จ: " + e.message); }
+    setSaving(false);
+  };
+
+  const handleCopyDefault = async () => {
+    if (!confirm("Copy ราคา default มาทั้งหมด?\nจะ override ราคาปัจจุบันทั้งหมดด้วยราคา default")) return;
+    setSaving(true);
+    try {
+      // Delete existing overrides
+      await sb.del(`customer_rate_overrides?account_code=eq.${customer.account_code}&carrier_code=eq.${carrier}&service_type=eq.${serviceType}`);
+      setOverrides([]);
+    } catch(e) { alert("Error: " + e.message); }
+    setSaving(false);
+  };
+
+  const handleReset = async () => {
+    if (!confirm("ลบราคาพิเศษทั้งหมด?\nระบบจะใช้ราคา default แทน")) return;
+    setSaving(true);
+    try {
+      await sb.del(`customer_rate_overrides?account_code=eq.${customer.account_code}&carrier_code=eq.${carrier}&service_type=eq.${serviceType}`);
+      setOverrides([]);
+    } catch(e) { alert("Error: " + e.message); }
+    setSaving(false);
+  };
+
+  const handleExport = () => {
+    if (!window.XLSX || !defaultRows.length) return;
+    const rows = defaultRows.map(r => {
+      const row = { KG: r.weight };
+      ALL_ROUTES.forEach(route => {
+        row[route] = getEffective(r.weight, route);
+      });
+      return row;
+    });
+    const ws = window.XLSX.utils.json_to_sheet(rows, { header:["KG",...ALL_ROUTES] });
+    const wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "ราคาขาย");
+    window.XLSX.writeFile(wb, `${customer.account_code}_${carrier}_${serviceType}_sellprice.xlsx`);
+  };
+
+  const maxKg = defaultRows.length > 0 ? Math.max(...defaultRows.map(r=>r.weight)) : 50;
+  const overrideCount = overrides.length;
+
+  const displayRows = viewMode === "custom_only"
+    ? defaultRows.filter(r => overrides.some(o => o.weight === r.weight))
+    : defaultRows;
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, flexWrap:"wrap", gap:8 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <span style={{ fontSize:12, color:C.inkMid }}>แสดง:</span>
+          {[{v:"all",l:"ทุก route"},{v:"custom_only",l:`เฉพาะที่แก้ (${overrideCount} rows)`}].map(m => (
+            <button key={m.v} onClick={() => setViewMode(m.v)}
+              style={{ padding:"4px 12px", fontSize:11, borderRadius:6, border:"none",
+                cursor:"pointer", fontFamily:font, fontWeight:viewMode===m.v?700:400,
+                background:viewMode===m.v?C.green:C.bg, color:viewMode===m.v?"#fff":C.inkMid }}>
+              {m.l}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <Btn variant="ghost" size="sm" onClick={handleReset} disabled={saving||overrideCount===0}>
+            🔄 Reset Default
+          </Btn>
+          <Btn variant="outline" size="sm" onClick={handleExport} disabled={!xlsxReady||!defaultRows.length}>
+            📤 Export Excel
+          </Btn>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div style={{ display:"flex", gap:16, marginBottom:10, flexWrap:"wrap" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <div style={{ width:32, height:16, borderRadius:3, background:C.greenBg,
+            border:`1.5px solid ${C.green}`, display:"flex", alignItems:"center",
+            justifyContent:"center", fontSize:9, color:C.green, fontWeight:700 }}>25</div>
+          <span style={{ fontSize:11, color:C.inkMid }}>ราคาพิเศษ</span>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <div style={{ width:32, height:16, borderRadius:3, background:C.bg,
+            border:`1px solid ${C.border}`, display:"flex", alignItems:"center",
+            justifyContent:"center", fontSize:9, color:C.inkMid }}>21</div>
+          <span style={{ fontSize:11, color:C.inkMid }}>ใช้ราคา default</span>
+        </div>
+        {saving && <span style={{ fontSize:11, color:C.amber }}>⏳ กำลังบันทึก...</span>}
+        <span style={{ fontSize:11, color:C.inkFaint, marginLeft:"auto" }}>คลิกตัวเลขเพื่อแก้ไข</span>
+      </div>
+
+      {defaultRows.length === 0 ? (
+        <div style={{ padding:32, textAlign:"center", color:C.inkFaint, fontSize:13 }}>
+          ยังไม่มีตารางราคาทุนสำหรับ {carrier} {serviceType}<br/>
+          <span style={{ fontSize:11 }}>กรุณา Import ราคาทุนก่อนที่หน้า "ราคาทุนขนส่ง"</span>
+        </div>
+      ) : (
+        <div style={{ overflowX:"auto", maxHeight:480, overflowY:"auto" }}>
+          <table style={{ borderCollapse:"collapse", fontSize:11, whiteSpace:"nowrap" }}>
+            <thead style={{ position:"sticky", top:0, zIndex:2 }}>
+              <tr>
+                <th style={{ padding:"6px 10px", background:C.bg, border:`1px solid ${C.border}`,
+                  color:C.inkFaint, fontWeight:700, fontSize:10, minWidth:46, textAlign:"center" }}>KG</th>
+                {SELL_ROUTE_GROUPS.map(g => (
+                  <th key={g.origin} colSpan={g.routes.length}
+                    style={{ padding:"5px 8px", background:g.bg, border:`1px solid ${C.border}`,
+                      color:g.color, fontWeight:700, fontSize:11, textAlign:"center" }}>
+                    {g.label}
+                  </th>
+                ))}
+              </tr>
+              <tr>
+                <th style={{ padding:"4px 10px", background:C.bg, border:`1px solid ${C.border}` }}/>
+                {SELL_ROUTE_GROUPS.map(g =>
+                  g.routes.map(r => (
+                    <th key={r.key} style={{ padding:"4px 6px", background:g.bg,
+                      border:`1px solid ${C.border}`, color:g.color,
+                      fontWeight:600, fontSize:10, textAlign:"center", minWidth:54,
+                      borderTop:`2px solid ${g.color}30` }}>
+                      {r.label}
+                    </th>
+                  ))
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {displayRows.map((row, i) => {
+                const kg = row.weight;
+                return (
+                  <tr key={kg} style={{ background:i%2===0?C.bg+"60":"white" }}>
+                    <td style={{ padding:"2px 10px", border:`1px solid ${C.borderFaint}`,
+                      textAlign:"center", fontWeight:700, color:C.inkMid, fontSize:12 }}>
+                      {kg}
+                    </td>
+                    {SELL_ROUTE_GROUPS.map(g =>
+                      g.routes.map(r => {
+                        const defVal = getDefault(kg, r.key);
+                        const ovVal = getOverride(kg, r.key);
+                        const isCustom = ovVal !== null && ovVal !== defVal;
+                        const displayVal = ovVal !== null ? ovVal : defVal;
+                        return (
+                          <SellPriceCell key={r.key}
+                            defaultVal={defVal}
+                            displayVal={displayVal}
+                            isCustom={isCustom}
+                            onSave={price => handleCellSave(kg, r.key, price)}
+                            carrierColor={SELL_CARRIER_TABS.find(c=>c.key===carrier)?.color||C.green}
+                          />
+                        );
+                      })
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {defaultRows.length > 0 && (
+        <div style={{ marginTop:8, fontSize:11, color:C.inkFaint }}>
+          {displayRows.length} rows · {overrideCount} ราคาพิเศษ
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sell Price Cell ───────────────────────────────────────
+function SellPriceCell({ defaultVal, displayVal, isCustom, onSave, carrierColor }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(displayVal);
+  useEffect(() => { setVal(displayVal); }, [displayVal]);
+
+  if (editing) return (
+    <td style={{ padding:"1px 2px", border:`1px solid ${C.borderFaint}`, background:C.greenBg }}>
+      <input autoFocus type="number" value={val}
+        onChange={e => setVal(e.target.value)}
+        onBlur={() => { setEditing(false); const n=parseFloat(val)||0; onSave(n); }}
+        onKeyDown={e => e.key==="Enter" && e.target.blur()}
+        style={{ width:52, padding:"2px 4px", fontSize:11, border:`2px solid ${carrierColor||C.green}`,
+          borderRadius:4, textAlign:"right", fontFamily:font, outline:"none",
+          color:carrierColor||C.green, fontWeight:700 }}
+      />
+    </td>
+  );
+
+  return (
+    <td onClick={() => setEditing(true)}
+      style={{ padding:"1px 2px", border:`1px solid ${C.borderFaint}`,
+        background:isCustom?`${C.greenBg}80`:"transparent", cursor:"pointer" }}
+      onMouseEnter={e => e.currentTarget.style.background = C.greenBg}
+      onMouseLeave={e => e.currentTarget.style.background = isCustom?`${C.greenBg}80`:"transparent"}>
+      <div style={{ textAlign:"right", padding:"2px 6px", minWidth:54 }}>
+        {isCustom ? (
+          <>
+            <div style={{ fontWeight:700, color:carrierColor||C.green, fontSize:11 }}>{displayVal}</div>
+            <div style={{ fontSize:9, color:C.inkFaint, textDecoration:"line-through", lineHeight:1 }}>
+              {defaultVal}
+            </div>
+          </>
+        ) : (
+          <span style={{ color:C.inkMid, fontWeight:400, fontSize:11 }}>{displayVal||"—"}</span>
+        )}
+      </div>
+    </td>
+  );
+}
+
+// ── Sell Pricing Main Page ────────────────────────────────
+function SellPricingPage() {
+  const [customers, setCustomers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [carrier, setCarrier] = useState("FLASH");
+  const [svcKey, setSvcKey] = useState("STD");
+  const [defaultRows, setDefaultRows] = useState([]);
+  const [overrides, setOverrides] = useState([]);
+  const [loadingRates, setLoadingRates] = useState(false);
+  const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
+
+  useEffect(() => {
+    if (!window.XLSX) {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+      s.onload = () => setXlsxReady(true);
+      document.head.appendChild(s);
+    }
+    loadCustomers();
+  }, []);
+
+  useEffect(() => { loadCustomers(); }, [search]);
+
+  useEffect(() => {
+    if (selected) loadRates();
+  }, [selected, carrier, svcKey]);
+
+  const loadCustomers = async () => {
+    setLoading(true);
+    let url = "wf_customers?select=*&order=account_code.asc&status=neq.lost";
+    if (search) url += `&or=(account_code.ilike.*${search}*,customer_name.ilike.*${search}*)`;
+    const data = await sb.get(url);
+    setCustomers(Array.isArray(data) ? data : []);
+    setLoading(false);
+  };
+
+  const loadRates = async () => {
+    setLoadingRates(true);
+    // Load default rates from carrier_rate_rows
+    const tables = await sb.get(
+      `carrier_rate_tables?carrier_code=eq.${carrier}&service_type=eq.${svcKey}&is_active=eq.true`
+    );
+    const t = Array.isArray(tables) && tables.length > 0 ? tables[0] : null;
+    if (t?.id) {
+      const rows = await sb.get(`carrier_rate_rows?table_id=eq.${t.id}&order=weight.asc`);
+      setDefaultRows(Array.isArray(rows) ? rows : []);
+    } else {
+      setDefaultRows([]);
+    }
+    // Load customer overrides
+    if (selected?.account_code) {
+      const ovs = await sb.get(
+        `customer_rate_overrides?account_code=eq.${encodeURIComponent(selected.account_code)}&carrier_code=eq.${carrier}&service_type=eq.${svcKey}&is_active=eq.true&order=weight.asc`
+      );
+      setOverrides(Array.isArray(ovs) ? ovs : []);
+    }
+    setLoadingRates(false);
+  };
+
+  const currentCarrierCfg = SELL_CARRIER_TABS.find(c => c.key === carrier);
+  const overrideCount = overrides.length;
+
+  return (
+    <div style={{ minHeight:"100vh", display:"flex", fontFamily:font, background:C.bg }}>
+      {/* Left panel */}
+      <div style={{ width:280, background:C.surface, borderRight:`1px solid ${C.border}`,
+        display:"flex", flexDirection:"column", flexShrink:0 }}>
+        <div style={{ padding:"20px 16px 14px", borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:16, fontWeight:700, color:C.ink, marginBottom:12 }}>
+            ราคาขาย
+          </div>
+          <div style={{ position:"relative" }}>
+            <input value={searchInput}
+              onChange={e => {
+                setSearchInput(e.target.value);
+                if (e.target.value === "") setSearch("");
+              }}
+              onKeyDown={e => e.key === "Enter" && setSearch(searchInput)}
+              placeholder="ค้นหา account / ชื่อ..."
+              style={{ width:"100%", padding:"8px 12px 8px 30px", fontSize:12,
+                border:`1.5px solid ${C.border}`, borderRadius:8, background:C.bg,
+                fontFamily:font, outline:"none", boxSizing:"border-box", color:C.ink }}
+            />
+            <span style={{ position:"absolute", left:9, top:"50%", transform:"translateY(-50%)",
+              color:C.inkFaint, fontSize:12, pointerEvents:"none" }}>⌕</span>
+            {searchInput && (
+              <span onClick={() => { setSearchInput(""); setSearch(""); }}
+                style={{ position:"absolute", right:9, top:"50%", transform:"translateY(-50%)",
+                  color:C.inkFaint, fontSize:13, cursor:"pointer" }}>✕</span>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {loading ? <Spinner/> : customers.map(c => {
+            const isSel = selected?.id === c.id;
+            return (
+              <div key={c.id} onClick={() => { setSelected(c); setCarrier("FLASH"); setSvcKey("STD"); }}
+                style={{ padding:"10px 14px", borderBottom:`1px solid ${C.borderFaint}`,
+                  background:isSel?C.greenBg:"transparent", cursor:"pointer",
+                  borderLeft:isSel?`3px solid ${C.green}`:"3px solid transparent",
+                  transition:"background 0.1s" }}
+                onMouseEnter={e => { if(!isSel) e.currentTarget.style.background = C.bg; }}
+                onMouseLeave={e => { if(!isSel) e.currentTarget.style.background = "transparent"; }}>
+                <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:13, fontWeight:600, color:isSel?C.green:C.ink }}>
+                    {c.account_code}
+                  </span>
+                  {c.status !== "active" && <StatusChip status={c.status}/>}
+                </div>
+                <div style={{ fontSize:11, color:C.inkMid,
+                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {c.customer_name}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Right panel */}
+      <div style={{ flex:1, overflowY:"auto" }}>
+        {!selected ? (
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
+            justifyContent:"center", height:"60vh", color:C.inkFaint, gap:12 }}>
+            <div style={{ fontSize:48, opacity:0.2 }}>◑</div>
+            <div style={{ fontSize:14 }}>เลือกลูกค้าจากรายการเพื่อดูและแก้ไขราคาขาย</div>
+          </div>
+        ) : (
+          <div style={{ padding:"24px 28px" }}>
+            {/* Header */}
+            <div style={{ marginBottom:20 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
+                <h2 style={{ fontSize:20, fontWeight:700, color:C.ink,
+                  letterSpacing:"-0.5px", margin:0 }}>{selected.account_code}</h2>
+                <StatusChip status={selected.status}/>
+              </div>
+              <div style={{ fontSize:13, color:C.inkMid, marginBottom:8 }}>
+                {selected.customer_name}
+              </div>
+              {overrideCount > 0 && (
+                <span style={{ fontSize:11, padding:"3px 10px", borderRadius:99,
+                  background:C.greenBg, color:C.green, fontWeight:600 }}>
+                  ✅ มีราคาพิเศษ {overrideCount} rows ({carrier} {svcKey})
+                </span>
+              )}
+            </div>
+
+            {/* Carrier tabs */}
+            <div style={{ display:"flex", gap:2, borderBottom:`2px solid ${C.border}`, marginBottom:16 }}>
+              {SELL_CARRIER_TABS.map(ct => (
+                <button key={ct.key}
+                  onClick={() => { setCarrier(ct.key); setSvcKey(ct.services[0].key); }}
+                  style={{ padding:"9px 20px", fontSize:13, border:"none", cursor:"pointer",
+                    fontFamily:font, fontWeight:carrier===ct.key?700:400,
+                    background:"transparent",
+                    color:carrier===ct.key?ct.color:C.inkMid,
+                    borderBottom:carrier===ct.key?`2.5px solid ${ct.color}`:"2.5px solid transparent",
+                    marginBottom:"-2px" }}>
+                  {ct.icon} {ct.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Service tabs */}
+            {currentCarrierCfg && currentCarrierCfg.services.length > 1 && (
+              <div style={{ display:"flex", gap:6, marginBottom:16 }}>
+                {currentCarrierCfg.services.map(s => (
+                  <button key={s.key} onClick={() => setSvcKey(s.key)}
+                    style={{ padding:"6px 16px", fontSize:12, borderRadius:7, border:"none",
+                      cursor:"pointer", fontFamily:font, fontWeight:svcKey===s.key?700:400,
+                      background:svcKey===s.key?currentCarrierCfg.color:C.bg,
+                      color:svcKey===s.key?"#fff":C.inkMid,
+                      outline:svcKey===s.key?"none":`1.5px solid ${C.border}` }}>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Pricing table */}
+            <div style={{ background:C.surface, borderRadius:12,
+              border:`1px solid ${C.border}`, padding:"16px 20px" }}>
+              {loadingRates ? <Spinner/> : (
+                <CustomerSellTable
+                  customer={selected}
+                  carrier={carrier}
+                  serviceType={svcKey}
+                  defaultRows={defaultRows}
+                  overrides={overrides}
+                  setOverrides={setOverrides}
+                  xlsxReady={xlsxReady}
+                />
+              )}
+            </div>
+
+            {/* Info */}
+            <div style={{ marginTop:12, padding:"10px 16px", borderRadius:8,
+              background:C.blueBg, border:`1px solid ${C.blue}20`,
+              fontSize:12, color:C.blue }}>
+              💡 Route ที่ไม่ได้กำหนดราคาพิเศษ ระบบใช้ <strong>ราคา default</strong> จากตารางราคาทุนขนส่งอัตโนมัติ
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function App() {
@@ -1904,7 +2410,7 @@ export default function App() {
   const PAGES = {
     customers:    <CustomersPage/>,
     cost_pricing: <CostPricingPage/>,
-    sell_pricing: <PlaceholderPage title="ราคาขาย" icon="◑"/>,
+    sell_pricing: <SellPricingPage/>,
     carriers:     <PlaceholderPage title="ข้อมูลขนส่ง" icon="▷"/>,
   };
 
