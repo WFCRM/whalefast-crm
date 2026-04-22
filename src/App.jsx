@@ -2250,7 +2250,24 @@ function SellPricingPage() {
   useEffect(() => { loadCustomers(); }, [search]);
 
   useEffect(() => {
-    if (selected) loadRates();
+    if (!selected) return;
+    // Auto-correct carrier if current carrier not in customer's carriers
+    const custCarriers = Array.isArray(selected.carriers) && selected.carriers.length > 0
+      ? selected.carriers : null;
+    if (custCarriers) {
+      const validCarriers = SELL_CARRIER_TABS.filter(ct => {
+        if (ct.key === "FLASH") return custCarriers.some(c => c.startsWith("FLASH"));
+        return custCarriers.includes(ct.key);
+      }).map(ct => ct.key);
+      if (!validCarriers.includes(carrier)) {
+        const firstValid = validCarriers[0] || "FLASH";
+        const firstCfg = SELL_CARRIER_TABS.find(ct => ct.key === firstValid);
+        setCarrier(firstValid);
+        setSvcKey(firstCfg?.services[0]?.key || "STD");
+        return; // loadRates will be called after state update
+      }
+    }
+    loadRates();
   }, [selected, carrier, svcKey]);
 
   const loadCustomers = async () => {
@@ -2285,7 +2302,14 @@ function SellPricingPage() {
     setLoadingRates(false);
   };
 
-  const currentCarrierCfg = SELL_CARRIER_TABS.find(c => c.key === carrier);
+  // Only show carriers that customer has enabled (or all if not set)
+  const visibleCarrierTabs = SELL_CARRIER_TABS.filter(ct => {
+    if (!Array.isArray(selected?.carriers) || selected.carriers.length === 0) return true;
+    if (ct.key === "FLASH") return selected.carriers.some(c => c.startsWith("FLASH"));
+    return selected.carriers.includes(ct.key);
+  });
+  // currentCarrierCfg from visible tabs only - prevents Flash service tabs leaking
+  const currentCarrierCfg = visibleCarrierTabs.find(c => c.key === carrier);
   const overrideCount = overrides.length;
 
   return (
@@ -2389,13 +2413,7 @@ function SellPricingPage() {
 
             {/* Carrier tabs */}
             <div style={{ display:"flex", gap:2, borderBottom:`2px solid ${C.border}`, marginBottom:16 }}>
-              {SELL_CARRIER_TABS.filter(ct => {
-                // Filter based on customer's carriers field
-                const cust = selected;
-                if (!Array.isArray(cust?.carriers) || cust.carriers.length === 0) return true; // show all if not set
-                if (ct.key === "FLASH") return cust.carriers.some(c => c.startsWith("FLASH"));
-                return cust.carriers.includes(ct.key);
-              }).map(ct => (
+              {visibleCarrierTabs.map(ct => (
                 <button key={ct.key}
                   onClick={() => { 
                     setCarrier(ct.key); 
