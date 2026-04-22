@@ -1363,17 +1363,70 @@ function FlashCostPage() {
     reader.onload=async(ev)=>{
       try {
         const wb=window.XLSX.read(ev.target.result,{type:"array"});
-        const ws=wb.Sheets[wb.SheetNames[0]];
-        const rows=window.XLSX.utils.sheet_to_json(ws,{defval:0});
+        const sheetNames=wb.SheetNames;
         let count=0;
-        for(const row of rows){
-          const kg=parseInt(row["kg"]||row["KG"]||row["น้ำหนัก"])||0; if(!kg) continue;
-          for(const s of ["STD","BULKY","FRUIT"]) for(const z of ["BKK","UPC"]){
-            const price=parseFloat(row[`${s}_${z}`])||0;
-            if(price>0){const tid=await ensureTable(s,z);if(tid){await updateRate(tid,kg,price);count++;}}
+
+        // ── ตรวจ format: ไฟล์ต้นฉบับ (มี sheet ทุน Flash WF) หรือ template ของเรา
+        const isOriginal = sheetNames.some(s=>s.includes("Flash WF")||s.includes("ทุน Flash")||s.includes("BulkyWF")||s.includes("FruitWF"));
+
+        if(isOriginal) {
+          // ── Flash STD: "ทุน Flash WF eff 1.3.25" หรือ "ทุน Flash WF"
+          const stdSheet = sheetNames.find(s=>s.includes("Flash WF"));
+          if(stdSheet) {
+            const ws=wb.Sheets[stdSheet];
+            const rows=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+            // หา header row (row ที่มี [BKK])
+            let hdr=-1;
+            for(let i=0;i<rows.length;i++) if(String(rows[i][0]).includes("Weight")||String(rows[i][0]).includes("≤ 1")){hdr=i;break;}
+            const dataStart=rows.findIndex(r=>String(r[0]).includes("≤")||/^≤?\s*\d+$/.test(String(r[0]).trim()));
+            for(let i=dataStart>0?dataStart:3;i<rows.length;i++){
+              const r=rows[i]; const wt=String(r[0]).replace("≤","").trim();
+              const kg=parseInt(wt); if(!kg||isNaN(kg)) continue;
+              // col2=BKK→BKK, col3=BKK→UPC, col4=UPC→BKK, col5=Within, col6=C→UPC
+              const bkk=Math.max(parseFloat(r[2])||0, parseFloat(r[4])||0);
+              const upc=Math.max(parseFloat(r[3])||0, parseFloat(r[5])||0, parseFloat(r[6])||0);
+              if(bkk>0){const tid=await ensureTable("STD","BKK");if(tid)await updateRate(tid,kg,bkk);count++;}
+              if(upc>0){const tid=await ensureTable("STD","UPC");if(tid)await updateRate(tid,kg,upc);count++;}
+            }
+          }
+          // ── Flash BULKY: "ทุน BulkyWF"
+          const bulkySheet = sheetNames.find(s=>s.toLowerCase().includes("bulky"));
+          if(bulkySheet) {
+            const ws=wb.Sheets[bulkySheet];
+            const rows=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+            for(let i=2;i<rows.length;i++){
+              const r=rows[i]; const wt=String(r[0]).replace("≤","").trim();
+              const kg=parseInt(wt); if(!kg||isNaN(kg)) continue;
+              const bkk=parseFloat(r[2])||0; const upc=parseFloat(r[3])||0;
+              if(bkk>0){const tid=await ensureTable("BULKY","BKK");if(tid)await updateRate(tid,kg,bkk);count++;}
+              if(upc>0){const tid=await ensureTable("BULKY","UPC");if(tid)await updateRate(tid,kg,upc);count++;}
+            }
+          }
+          // ── Flash FRUIT: "ทุน FruitWF"
+          const fruitSheet = sheetNames.find(s=>s.toLowerCase().includes("fruit"));
+          if(fruitSheet) {
+            const ws=wb.Sheets[fruitSheet];
+            const rows=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+            for(let i=1;i<rows.length;i++){
+              const r=rows[i]; const kg=parseInt(String(r[0]).trim()); if(!kg||isNaN(kg)) continue;
+              const bkk=parseFloat(r[2])||0; const upc=parseFloat(r[4])||0;
+              if(bkk>0){const tid=await ensureTable("FRUIT","BKK");if(tid)await updateRate(tid,kg,bkk);count++;}
+              if(upc>0){const tid=await ensureTable("FRUIT","UPC");if(tid)await updateRate(tid,kg,upc);count++;}
+            }
+          }
+        } else {
+          // ── Template format: คอลัมน์ kg, STD_BKK, STD_UPC, BULKY_BKK, ...
+          const ws=wb.Sheets[sheetNames[0]];
+          const rows=window.XLSX.utils.sheet_to_json(ws,{defval:0});
+          for(const row of rows){
+            const kg=parseInt(row["kg"]||row["KG"]||row["น้ำหนัก"])||0; if(!kg) continue;
+            for(const s of ["STD","BULKY","FRUIT"]) for(const z of ["BKK","UPC"]){
+              const price=parseFloat(row[`${s}_${z}`])||0;
+              if(price>0){const tid=await ensureTable(s,z);if(tid){await updateRate(tid,kg,price);count++;}}
+            }
           }
         }
-        alert(`✅ Import สำเร็จ ${count} rates`); loadData();
+        alert(`✅ Import Flash สำเร็จ ${count} rates`); loadData();
       } catch(err){alert("Error: "+err.message);}
       e.target.value="";
     };
@@ -1546,52 +1599,113 @@ function DHLCostPage() {
     reader.onload=async(ev)=>{
       try {
         const wb=window.XLSX.read(ev.target.result,{type:"array"});
-        const ws=wb.Sheets[wb.SheetNames[0]];
-        const raw=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-        let ekpNo="";
-        for(let i=0;i<Math.min(10,raw.length)&&!ekpNo;i++)
-          for(let j=0;j<raw[i].length&&!ekpNo;j++)
-            if(/^\d{10}$/.test(String(raw[i][j]).trim())) ekpNo=String(raw[i][j]).trim();
-        if(!ekpNo){alert("ไม่พบ EKP No. (10 หลัก)");return;}
-        const svcType=file.name.toUpperCase().includes("ECO")?"ECO":"PDO";
-        let headerRow=-1;
-        for(let i=0;i<raw.length;i++) if(String(raw[i][0]).includes("Weight")){headerRow=i;break;}
-        if(headerRow<0){alert("ไม่พบ header");return;}
-        const hdr=raw[headerRow]; const colMap={};
-        hdr.forEach((v,j)=>{const s=String(v).trim();
-          if(s==="BKK") colMap.BKK=j;
-          else if(s.includes("C,E")||s.includes("SH")) colMap.UPC_CE=j;
-          else if(s.includes("N, NE")||s.includes("LH")) colMap.UPC_NNS=j;
-          else if(s==="UPC") colMap.UPC=j;
-        });
-        const rData=[];
-        for(let i=headerRow+1;i<raw.length;i++){
-          const row=raw[i]; const wt=String(row[0]).trim();
-          if(!wt||!wt.includes("-")) continue;
-          const parts=wt.split("-");
-          const from=parseInt(parts[0].trim().replace(/,/g,""))||0;
-          const to=parseInt(parts[parts.length-1].trim().replace(/,/g,""));
-          if(isNaN(to)) continue;
-          const entry={weight_g_from:from,weight_g_to:to};
-          Object.entries(colMap).forEach(([z,c])=>{entry[`cost_${z.toLowerCase()}`]=parseFloat(row[c])||0;});
-          rData.push(entry);
+        const sheetNames=wb.SheetNames;
+
+        // ── ตรวจ format: ไฟล์รวม (มี sheet ทุนDHL) หรือ Rate Card จริง (Table 1)
+        const combinedPDO=sheetNames.find(s=>s.includes("ทุนDHL PDO"));
+        const combinedECO=sheetNames.find(s=>s.includes("ทุนDHL")&&!s.includes("PDO"));
+        const isRateCard=sheetNames.includes("Table 1");
+
+        if(combinedPDO||combinedECO) {
+          // ── ไฟล์รวม Flash DHL Offline — weight เป็น KG
+          let total=0;
+          for(const [sheetName,svcType] of [[combinedPDO,"PDO"],[combinedECO,"ECO"]]) {
+            if(!sheetName) continue;
+            const ws=wb.Sheets[sheetName];
+            const raw=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+            // row0=header: Weight(g), Dimension, BKK, SH(C,E)/UPC, LH(N,NE,S)
+            const hdr=raw[0]; const colMap={};
+            hdr.forEach((v,j)=>{const s=String(v).trim();
+              if(s==="BKK") colMap.BKK=j;
+              else if(s.includes("C,E")||s.includes("SH")) colMap.UPC_CE=j;
+              else if(s.includes("N, NE")||s.includes("LH")) colMap.UPC_NNS=j;
+              else if(s==="UPC") colMap.UPC=j;
+            });
+            const rData=[];
+            for(let i=1;i<raw.length;i++){
+              const row=raw[i]; const kg=parseFloat(String(row[0]).trim());
+              if(!kg||isNaN(kg)) continue;
+              // weight เป็น KG — แปลงเป็น gram range
+              const from=Math.round((kg-1)*1000)+1; const to=Math.round(kg*1000);
+              const entry={weight_g_from:from===1?0:from, weight_g_to:to};
+              Object.entries(colMap).forEach(([z,c])=>{entry[`cost_${z.toLowerCase()}`]=parseFloat(row[c])||0;});
+              rData.push(entry);
+            }
+            if(!rData.length) continue;
+            const tRes=await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_tables`,{
+              method:"POST",headers:{...sbHeaders(getToken()),Prefer:"resolution=merge-duplicates,return=representation"},
+              body:JSON.stringify({ekp_no:`COMBINED_${svcType}`,service_type:svcType,
+                account_name:`WhaleFast DHL (${svcType})`,is_active:true}),
+            });
+            const tData=await tRes.json();
+            const tableId=Array.isArray(tData)?tData[0]?.id:tData?.id; if(!tableId) continue;
+            await sb.del(`dhl_cost_rates?cost_table_id=eq.${tableId}`);
+            const batch=rData.map(r=>({...r,cost_table_id:tableId}));
+            for(let i=0;i<batch.length;i+=50)
+              await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_rates`,{method:"POST",headers:sbHeaders(getToken()),body:JSON.stringify(batch.slice(i,i+50))});
+            total+=rData.length;
+          }
+          alert(`✅ Import DHL จากไฟล์รวม สำเร็จ ${total} rows`); loadData(); return;
         }
-        if(!rData.length){alert("ไม่พบข้อมูลราคา");return;}
-        const tRes=await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_tables`,{
-          method:"POST",headers:{...sbHeaders(getToken()),Prefer:"resolution=merge-duplicates,return=representation"},
-          body:JSON.stringify({ekp_no:ekpNo,service_type:svcType,account_name:`WhaleFast DHL (${svcType})`,is_active:true}),
-        });
-        const tData=await tRes.json();
-        const tableId=Array.isArray(tData)?tData[0]?.id:tData?.id;
-        if(!tableId){alert("สร้างตารางไม่สำเร็จ");return;}
-        await sb.del(`dhl_cost_rates?cost_table_id=eq.${tableId}`);
-        const batch=rData.map(r=>({...r,cost_table_id:tableId}));
-        for(let i=0;i<batch.length;i+=50)
-          await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_rates`,{
-            method:"POST",headers:sbHeaders(getToken()),body:JSON.stringify(batch.slice(i,i+50)),
+
+        if(isRateCard) {
+          // ── Rate Card จริงจาก DHL — weight เป็น gram range เช่น "0 - 250"
+          const ws=wb.Sheets["Table 1"];
+          const raw=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+          let ekpNo="",svcType="PDO";
+          for(const row of raw){
+            for(const cell of row){
+              const s=String(cell).trim();
+              if(/^\d{10}$/.test(s)) ekpNo=s;
+              if(s==="ECO") svcType="ECO";
+              if(s==="PDO") svcType="PDO";
+            }
+            if(ekpNo) break;
+          }
+          // หา header row (มีคำว่า Weight และ BKK)
+          let headerRow=-1;
+          for(let i=0;i<raw.length;i++){
+            const r=raw[i];
+            if(String(r[0]).includes("Weight")&&r.some(v=>String(v).trim()==="BKK")){headerRow=i;break;}
+          }
+          if(headerRow<0){alert("ไม่พบ header row");return;}
+          const hdr=raw[headerRow]; const colMap={};
+          hdr.forEach((v,j)=>{const s=String(v).trim();
+            if(s==="BKK") colMap.BKK=j;
+            else if(s.includes("C,E")||s.includes("SH")) colMap.UPC_CE=j;
+            else if(s.includes("N, NE")||s.includes("LH")) colMap.UPC_NNS=j;
+            else if(s==="UPC"&&!colMap.UPC) colMap.UPC=j;
           });
-        alert(`✅ Import DHL ${svcType} (EKP: ${ekpNo}) สำเร็จ ${rData.length} rows`);
-        loadData();
+          const rData=[];
+          for(let i=headerRow+1;i<raw.length;i++){
+            const row=raw[i]; const wt=String(row[0]).trim();
+            if(!wt||!wt.includes("-")) continue;
+            const parts=wt.split("-");
+            const from=parseInt(parts[0].replace(/[^0-9]/g,""))||0;
+            const to=parseInt(parts[1]?.replace(/[^0-9]/g,""));
+            if(!to||isNaN(to)) continue;
+            const entry={weight_g_from:from,weight_g_to:to};
+            Object.entries(colMap).forEach(([z,c])=>{entry[`cost_${z.toLowerCase()}`]=parseFloat(row[c])||0;});
+            if(Object.values(entry).some((v,i)=>i>1&&v>0)) rData.push(entry);
+          }
+          if(!rData.length){alert("ไม่พบข้อมูลราคา");return;}
+          const tRes=await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_tables`,{
+            method:"POST",headers:{...sbHeaders(getToken()),Prefer:"resolution=merge-duplicates,return=representation"},
+            body:JSON.stringify({ekp_no:ekpNo||`RC_${svcType}`,service_type:svcType,
+              account_name:`WhaleFast DHL (${svcType})`,is_active:true}),
+          });
+          const tData=await tRes.json();
+          const tableId=Array.isArray(tData)?tData[0]?.id:tData?.id;
+          if(!tableId){alert("สร้างตารางไม่สำเร็จ");return;}
+          await sb.del(`dhl_cost_rates?cost_table_id=eq.${tableId}`);
+          const batch=rData.map(r=>({...r,cost_table_id:tableId}));
+          for(let i=0;i<batch.length;i+=50)
+            await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_rates`,{method:"POST",headers:sbHeaders(getToken()),body:JSON.stringify(batch.slice(i,i+50))});
+          alert(`✅ Import DHL ${svcType} (EKP: ${ekpNo}) สำเร็จ ${rData.length} rows`);
+          loadData(); return;
+        }
+
+        alert("ไม่รู้จัก format ไฟล์นี้ — ลองไฟล์ Rate Card จาก DHL หรือไฟล์ราคาทุนรวม");
       } catch(err){alert("Error: "+err.message);}
       e.target.value="";
     };
@@ -1782,17 +1896,37 @@ function SPXCostPage() {
     reader.onload=async ev=>{
       try {
         const wb=window.XLSX.read(ev.target.result,{type:"array"});
-        const ws=wb.Sheets[wb.SheetNames[0]];
-        const rows=window.XLSX.utils.sheet_to_json(ws,{defval:0});
+        const sheetNames=wb.SheetNames;
+        // ตรวจว่าเป็นไฟล์ต้นฉบับ SPX (มี sheet "ทุน") หรือ template ของเรา
+        const origSheet=sheetNames.find(s=>s==="ทุน"||s.includes("ทุน"));
         let count=0;
-        for(const row of rows){
-          const kg=parseInt(row["kg"]||row["KG"])||0; if(!kg) continue;
-          for(const z of ZONES){
-            const price=parseFloat(row[z])||0;
-            if(price>0){const tid=await ensureTable(z);if(tid){await updateRate(tid,kg,price);count++;}}
+
+        if(origSheet) {
+          // ── ไฟล์ต้นฉบับ SPX: row1=header1, row2=header2, row3+=data
+          // col3(idx2)=kg, col5(idx4)=BKK cost, col6(idx5)=UPC cost
+          const ws=wb.Sheets[origSheet];
+          const raw=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+          for(let i=2;i<raw.length;i++){
+            const r=raw[i];
+            const kg=parseInt(String(r[2]).trim()); if(!kg||isNaN(kg)) continue;
+            const bkk=parseFloat(r[4])||0;
+            const upc=parseFloat(r[5])||0;
+            if(bkk>0){const tid=await ensureTable("BKK");if(tid)await updateRate(tid,kg,bkk);count++;}
+            if(upc>0){const tid=await ensureTable("UPC");if(tid)await updateRate(tid,kg,upc);count++;}
+          }
+        } else {
+          // ── Template format: col kg, BKK, UPC
+          const ws=wb.Sheets[sheetNames[0]];
+          const rows=window.XLSX.utils.sheet_to_json(ws,{defval:0});
+          for(const row of rows){
+            const kg=parseInt(row["kg"]||row["KG"])||0; if(!kg) continue;
+            for(const z of ZONES){
+              const price=parseFloat(row[z])||0;
+              if(price>0){const tid=await ensureTable(z);if(tid){await updateRate(tid,kg,price);count++;}}
+            }
           }
         }
-        alert(`✅ Import สำเร็จ ${count} rates`); loadData();
+        alert(`✅ Import SPX สำเร็จ ${count} rates`); loadData();
       } catch(err){alert("Error: "+err.message);}
       e.target.value="";
     };
