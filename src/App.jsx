@@ -2296,10 +2296,10 @@ function SellPricingPage() {
   const overrideCount = overrides.length;
 
   return (
-    <div style={{ minHeight:"100vh", display:"flex", fontFamily:font, background:C.bg }}>
+    <div style={{ height:"100vh", display:"flex", fontFamily:font, background:C.bg, overflow:"hidden" }}>
       {/* Left panel */}
       <div style={{ width:280, background:C.surface, borderRight:`1px solid ${C.border}`,
-        display:"flex", flexDirection:"column", flexShrink:0 }}>
+        display:"flex", flexDirection:"column", flexShrink:0, height:"100vh", overflow:"hidden" }}>
         <div style={{ padding:"20px 16px 14px", borderBottom:`1px solid ${C.border}` }}>
           <div style={{ fontSize:16, fontWeight:700, color:C.ink, marginBottom:12 }}>
             ราคาขาย
@@ -2369,7 +2369,7 @@ function SellPricingPage() {
       </div>
 
       {/* Right panel */}
-      <div style={{ flex:1, overflowY:"auto" }}>
+      <div style={{ flex:1, overflowY:"auto", height:"100vh" }}>
         {!selected ? (
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
             justifyContent:"center", height:"60vh", color:C.inkFaint, gap:12 }}>
