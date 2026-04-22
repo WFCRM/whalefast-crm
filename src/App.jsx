@@ -2251,24 +2251,25 @@ function SellPricingPage() {
 
   useEffect(() => {
     if (!selected) return;
-    // Auto-correct carrier if current carrier not in customer's carriers
     const custCarriers = Array.isArray(selected.carriers) && selected.carriers.length > 0
       ? selected.carriers : null;
     if (custCarriers) {
-      const validCarriers = SELL_CARRIER_TABS.filter(ct => {
-        if (ct.key === "FLASH") return custCarriers.some(c => c.startsWith("FLASH"));
-        return custCarriers.includes(ct.key);
-      }).map(ct => ct.key);
-      if (!validCarriers.includes(carrier)) {
-        const firstValid = validCarriers[0] || "FLASH";
-        const firstCfg = SELL_CARRIER_TABS.find(ct => ct.key === firstValid);
-        setCarrier(firstValid);
+      // Check if current carrier is valid for this customer
+      const carrierValid = carrier === "FLASH"
+        ? custCarriers.some(c => c.startsWith("FLASH"))
+        : custCarriers.includes(carrier);
+      if (!carrierValid) {
+        // Switch to first valid carrier
+        const firstCustCarrier = custCarriers[0];
+        const firstCarrierKey = firstCustCarrier.startsWith("FLASH") ? "FLASH" : firstCustCarrier;
+        const firstCfg = SELL_CARRIER_TABS.find(ct => ct.key === firstCarrierKey);
+        setCarrier(firstCarrierKey);
         setSvcKey(firstCfg?.services[0]?.key || "STD");
-        return; // loadRates will be called after state update
+        return; // re-render will trigger this effect again with correct carrier
       }
     }
     loadRates();
-  }, [selected, carrier, svcKey]);
+  }, [selected?.id, carrier, svcKey]);
 
   const loadCustomers = async () => {
     setLoading(true);
@@ -2349,17 +2350,11 @@ function SellPricingPage() {
             return (
               <div key={c.id} onClick={() => {
                 setSelected(c);
-                // Set initial carrier to customer's first carrier
-                const custCarriers = Array.isArray(c.carriers) && c.carriers.length > 0 ? c.carriers : null;
-                if (custCarriers) {
-                  const firstCarrier = custCarriers[0].startsWith("FLASH") ? "FLASH" :
-                    custCarriers[0] === "DHL" ? "DHL" : custCarriers[0];
-                  const carrierCfg = SELL_CARRIER_TABS.find(ct => ct.key === firstCarrier);
-                  setCarrier(firstCarrier);
-                  setSvcKey(carrierCfg?.services[0]?.key || "STD");
-                } else {
-                  setCarrier("FLASH"); setSvcKey("STD");
-                }
+                // Always reset to FLASH/STD first, useEffect will auto-correct
+                setCarrier("FLASH");
+                setSvcKey("STD");
+                setDefaultRows([]);
+                setOverrides([]);
               }}
                 style={{ padding:"10px 14px", borderBottom:`1px solid ${C.borderFaint}`,
                   background:isSel?C.greenBg:"transparent", cursor:"pointer",
@@ -2384,7 +2379,8 @@ function SellPricingPage() {
       </div>
 
       {/* Right panel */}
-      <div style={{ flex:1, overflowY:"auto" }}>
+      <div style={{ flex:1, overflowY:"auto" }}
+        ref={el => { if (el && selected) el.scrollTop = 0; }}>
         {!selected ? (
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
             justifyContent:"center", height:"60vh", color:C.inkFaint, gap:12 }}>
