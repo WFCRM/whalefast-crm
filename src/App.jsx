@@ -2521,6 +2521,7 @@ function WFCustomersPage() {
   ];
 
   return (
+    <>
     <div style={{ display:"flex", height:"calc(100vh - 48px)", overflow:"hidden" }}>
       {/* LEFT: Customer list */}
       <div style={{ width:300, borderRight:`1px solid ${colors.border}`, display:"flex", flexDirection:"column", background:colors.card }}>
@@ -3291,6 +3292,7 @@ function SellPricingPage() {
         </div>
       </div>
     )}
+    </>
   );
 }
 
