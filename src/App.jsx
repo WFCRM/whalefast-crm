@@ -2260,12 +2260,23 @@ function WFCustomersPage() {
 
   const handleSave = async () => {
     try {
-      const payload = { ...form, cod_percent: parseFloat(form.cod_percent) || 2 };
+      const session = JSON.parse(localStorage.getItem("wf_session")||"null");
+      const token = session?.access_token;
+      const payload = { ...form, cod_percent: parseFloat(form.cod_percent)||2 };
       if (selected) {
-        await supabase.from("wf_customers").update(payload, { id: selected.id });
+        // UPDATE existing customer
+        await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?id=eq.${selected.id}`, {
+          method:"PATCH", headers:supabaseHeaders(token), body:JSON.stringify(payload)
+        });
         setSelected({ ...selected, ...payload });
       } else {
-        await supabase.from("wf_customers").insert(payload);
+        // INSERT new customer
+        if (!payload.account_code||!payload.customer_name) { alert("กรุณากรอก Account Code และชื่อลูกค้า"); return; }
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?on_conflict=account_code`, {
+          method:"POST", headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok && res.status !== 204) { const e = await res.json(); throw new Error(e.message||"Insert failed"); }
         setShowAddForm(false);
         setForm({ account_code:"", account_parent:"CZ0108", customer_name:"", status:"active", phone:"", email:"", address:"", business_type:"", product_type:"", sales_owner:"", customer_category:"", payment_type:"cash", billing_cycle:"", cod_percent:"2", tax_id:"", invoice_name:"", bank_name:"", bank_account:"", bank_account_name:"", line_group_id:"", notes:"" });
       }
@@ -2273,7 +2284,6 @@ function WFCustomersPage() {
     } catch (e) { alert("Error: " + e.message); }
   };
 
-  // Import pricing from Excel template
   const handleImportPricing = async (e) => {
     const file = e.target.files[0];
     if (!file || !window.XLSX || !selected) return;
@@ -2837,6 +2847,7 @@ function WFCustomersPage() {
                   </div>
                 )}
               </>
+            )}
             )}
           </div>
         )}
