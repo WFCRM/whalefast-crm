@@ -484,7 +484,7 @@ function PricingGrid({ carrier, zones, pricingTables, pricingRates, setPricingRa
 // ── Customer Detail Panel ─────────────────────────────────
 function CustomerDetail({ customer, onSaved }) {
   const [tab, setTab] = useState("info");
-  const [form, setForm] = useState({ ...customer });
+  const [form, setForm] = useState({ ...customer, carriers: Array.isArray(customer.carriers) ? customer.carriers : [] });
   const [saving, setSaving] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const originalData = useRef({ ...customer });
@@ -500,8 +500,8 @@ function CustomerDetail({ customer, onSaved }) {
   const [flashType, setFlashType] = useState("STD");
 
   useEffect(() => { 
-    setForm({ ...customer }); 
-    originalData.current = { ...customer };
+    setForm({ ...customer, carriers: Array.isArray(customer.carriers) ? customer.carriers : [] }); 
+    originalData.current = { ...customer, carriers: Array.isArray(customer.carriers) ? customer.carriers : [] };
     setTab("info"); 
   }, [customer.id]);
 
@@ -544,7 +544,7 @@ function CustomerDetail({ customer, onSaved }) {
 
   const handleCancelSave = () => {
     setShowConfirm(false);
-    setForm({ ...originalData.current }); // reset to original using ref
+    setForm({ ...originalData.current, carriers: Array.isArray(originalData.current.carriers) ? originalData.current.carriers : [] });
   };
 
   const doSave = async () => {
@@ -2236,12 +2236,6 @@ function SellPricingPage() {
   const [overrides, setOverrides] = useState([]);
   const [loadingRates, setLoadingRates] = useState(false);
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
-  const rightPanelRef = useRef(null);
-
-  useEffect(() => {
-    if (rightPanelRef.current) rightPanelRef.current.scrollTop = 0;
-  }, [selected?.id]);
-
   useEffect(() => {
     if (!window.XLSX) {
       const s = document.createElement("script");
@@ -2375,7 +2369,7 @@ function SellPricingPage() {
       </div>
 
       {/* Right panel */}
-      <div style={{ flex:1, overflowY:"auto" }} ref={rightPanelRef}>
+      <div style={{ flex:1, overflowY:"auto" }}>
         {!selected ? (
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
             justifyContent:"center", height:"60vh", color:C.inkFaint, gap:12 }}>
@@ -2383,7 +2377,7 @@ function SellPricingPage() {
             <div style={{ fontSize:14 }}>เลือกลูกค้าจากรายการเพื่อดูและแก้ไขราคาขาย</div>
           </div>
         ) : (
-          <div style={{ padding:"24px 28px" }}>
+          <div key={selected.id} style={{ padding:"24px 28px" }}>
             {/* Header */}
             <div style={{ marginBottom:20 }}>
               <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
@@ -2418,9 +2412,9 @@ function SellPricingPage() {
                     marginBottom:"-2px" }}>
                   {ct.icon} {ct.label}
                   {/* Show which Flash account */}
-                  {ct.key==="FLASH" && Array.isArray(cust?.carriers) && (
+                  {ct.key==="FLASH" && Array.isArray(selected?.carriers) && selected.carriers.some(c=>c.startsWith("FLASH")) && (
                     <span style={{ fontSize:10, marginLeft:4, opacity:0.7 }}>
-                      ({cust.carriers.filter(c=>c.startsWith("FLASH")).map(c=>c.replace("FLASH_","")).join("+")})
+                      ({selected.carriers.filter(c=>c.startsWith("FLASH")).map(c=>c.replace("FLASH_","")).join("+")})
                     </span>
                   )}
                 </button>
