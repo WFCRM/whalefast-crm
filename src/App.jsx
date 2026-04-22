@@ -315,8 +315,16 @@ const FORM_DEFAULTS = {
   phone:"", email:"", address:"", business_type:"", product_type:"",
   sales_owner:"", customer_category:"", payment_type:"cash", billing_cycle:"",
   cod_percent:"2", tax_id:"", invoice_name:"", bank_name:"", bank_account:"",
-  bank_account_name:"", line_group_id:"", notes:""
+  bank_account_name:"", line_group_id:"", notes:"",
+  carriers:[]
 };
+
+const CARRIER_OPTIONS = [
+  { key:"FLASH_CZ0108",  label:"Flash (CZ0108)",  icon:"⚡", color:"#D97706" },
+  { key:"FLASH_CAZ3461", label:"Flash (CAZ3461)", icon:"⚡", color:"#B45309" },
+  { key:"DHL",           label:"DHL",              icon:"📦", color:"#2563EB" },
+  { key:"SPX",           label:"SPX",              icon:"🛍", color:"#DC2626" },
+];
 
 const FORM_FIELDS = [
   { key:"account_code",    label:"Account Code",    placeholder:"CZ0108-49", half:true },
@@ -335,6 +343,7 @@ const FORM_FIELDS = [
   { key:"bank_account_name",label:"ชื่อบัญชี",       placeholder:"ชื่อ-นามสกุล", half:true },
   { key:"line_group_id",   label:"LINE Group ID",   placeholder:"Cxxxxxxxx", half:true },
   { key:"status",          label:"สถานะ",             placeholder:"",              half:true },
+  { key:"carriers",        label:"ขนส่งที่ใช้",        placeholder:"",              half:true, type:"carriers" },
   { key:"notes",           label:"หมายเหตุ",          placeholder:"เงื่อนไขพิเศษ...", half:false },
 ];
 
@@ -542,10 +551,13 @@ function CustomerDetail({ customer, onSaved }) {
     setShowConfirm(false);
     setSaving(true);
     try {
-      await sb.patch(`wf_customers?id=eq.${customer.id}`, {
-        ...form, cod_percent: parseFloat(form.cod_percent) || 2
-      });
-      originalData.current = { ...customer, ...form }; // update ref after save
+      const payload = {
+        ...form,
+        cod_percent: parseFloat(form.cod_percent) || 2,
+        carriers: Array.isArray(form.carriers) ? form.carriers : [],
+      };
+      await sb.patch(`wf_customers?id=eq.${customer.id}`, payload);
+      originalData.current = { ...customer, ...form };
       onSaved({ ...customer, ...form });
     } catch (e) { alert("บันทึกไม่สำเร็จ: " + e.message); }
     setSaving(false);
@@ -671,7 +683,31 @@ function CustomerDetail({ customer, onSaved }) {
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"16px 20px", marginBottom:20 }}>
             {FORM_FIELDS.map(f => (
               <FieldGroup key={f.key} label={f.label} span={f.half ? 1 : 2}>
-                {f.key === "status" ? (
+                {f.key === "carriers" ? (
+                  <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                    {CARRIER_OPTIONS.map(co => {
+                      const current = Array.isArray(form.carriers) ? form.carriers : [];
+                      const checked = current.includes(co.key);
+                      return (
+                        <label key={co.key} style={{ display:"flex", alignItems:"center", gap:8,
+                          cursor:"pointer", padding:"6px 10px", borderRadius:8,
+                          background:checked?`${co.color}15`:C.bg,
+                          border:`1.5px solid ${checked?co.color:C.border}`,
+                          transition:"all 0.15s" }}>
+                          <input type="checkbox" checked={checked} onChange={e => {
+                            const next = e.target.checked
+                              ? [...current, co.key]
+                              : current.filter(k => k !== co.key);
+                            setForm({...form, carriers:next});
+                          }} style={{ accentColor:co.color, cursor:"pointer" }}/>
+                          <span style={{ fontSize:13 }}>{co.icon}</span>
+                          <span style={{ fontSize:13, fontWeight:checked?600:400,
+                            color:checked?co.color:C.inkMid }}>{co.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : f.key === "status" ? (
                   <select value={form.status || "active"} onChange={e => setForm({...form, status:e.target.value})}
                     style={{ width:"100%", padding:"9px 12px", fontSize:13, border:`1.5px solid ${C.border}`,
                       borderRadius:8, background:C.bg, color:C.ink, fontFamily:font, outline:"none", cursor:"pointer" }}>
@@ -1138,6 +1174,19 @@ function CustomersPage() {
                       {c.customer_name}
                     </div>
                     {c.phone && <div style={{ fontSize:10, color:C.inkFaint, marginTop:1 }}>{c.phone}</div>}
+                    {Array.isArray(c.carriers) && c.carriers.length > 0 && (
+                      <div style={{ display:"flex", gap:3, marginTop:3, flexWrap:"wrap" }}>
+                        {c.carriers.map(ck => {
+                          const co = CARRIER_OPTIONS.find(o => o.key === ck);
+                          return co ? (
+                            <span key={ck} style={{ fontSize:9, padding:"1px 5px", borderRadius:99,
+                              background:`${co.color}15`, color:co.color, fontWeight:700 }}>
+                              {co.icon} {co.label}
+                            </span>
+                          ) : null;
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1212,7 +1261,30 @@ function AddCustomerPanel({ onSave, onCancel, xlsxReady, onImportCustomers, onDo
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"16px 20px", marginBottom:20 }}>
         {FORM_FIELDS.map(f => (
           <FieldGroup key={f.key} label={f.label} span={f.half?1:2}>
-            {f.key==="status" ? (
+            {f.key==="carriers" ? (
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {CARRIER_OPTIONS.map(co => {
+                  const current = Array.isArray(form.carriers) ? form.carriers : [];
+                  const checked = current.includes(co.key);
+                  return (
+                    <label key={co.key} style={{ display:"flex", alignItems:"center", gap:8,
+                      cursor:"pointer", padding:"6px 10px", borderRadius:8,
+                      background:checked?`${co.color}15`:C.bg,
+                      border:`1.5px solid ${checked?co.color:C.border}` }}>
+                      <input type="checkbox" checked={checked} onChange={e => {
+                        const next = e.target.checked
+                          ? [...current, co.key]
+                          : current.filter(k => k !== co.key);
+                        setForm({...form, carriers:next});
+                      }} style={{ accentColor:co.color, cursor:"pointer" }}/>
+                      <span style={{ fontSize:13 }}>{co.icon}</span>
+                      <span style={{ fontSize:13, fontWeight:checked?600:400,
+                        color:checked?co.color:C.inkMid }}>{co.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : f.key==="status" ? (
               <select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}
                 style={{ width:"100%", padding:"9px 12px", fontSize:13, border:`1.5px solid ${C.border}`,
                   borderRadius:8, background:C.bg, color:C.ink, fontFamily:font, outline:"none", cursor:"pointer" }}>
@@ -2304,7 +2376,13 @@ function SellPricingPage() {
 
             {/* Carrier tabs */}
             <div style={{ display:"flex", gap:2, borderBottom:`2px solid ${C.border}`, marginBottom:16 }}>
-              {SELL_CARRIER_TABS.map(ct => (
+              {SELL_CARRIER_TABS.filter(ct => {
+                // Filter based on customer's carriers field
+                const cust = selected;
+                if (!Array.isArray(cust?.carriers) || cust.carriers.length === 0) return true; // show all if not set
+                if (ct.key === "FLASH") return cust.carriers.some(c => c.startsWith("FLASH"));
+                return cust.carriers.includes(ct.key);
+              }).map(ct => (
                 <button key={ct.key}
                   onClick={() => { setCarrier(ct.key); setSvcKey(ct.services[0].key); }}
                   style={{ padding:"9px 20px", fontSize:13, border:"none", cursor:"pointer",
@@ -2314,6 +2392,12 @@ function SellPricingPage() {
                     borderBottom:carrier===ct.key?`2.5px solid ${ct.color}`:"2.5px solid transparent",
                     marginBottom:"-2px" }}>
                   {ct.icon} {ct.label}
+                  {/* Show which Flash account */}
+                  {ct.key==="FLASH" && Array.isArray(cust?.carriers) && (
+                    <span style={{ fontSize:10, marginLeft:4, opacity:0.7 }}>
+                      ({cust.carriers.filter(c=>c.startsWith("FLASH")).map(c=>c.replace("FLASH_","")).join("+")})
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
