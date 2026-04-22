@@ -1491,6 +1491,8 @@ function FlashCostPage() {
               <tr>
                 <th style={{padding:"8px 16px",background:C.bg,border:`1px solid ${C.border}`,
                   color:C.inkFaint,fontWeight:700,fontSize:11,textAlign:"center",minWidth:56}}>KG</th>
+                <th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.border}`,
+                  color:C.inkFaint,fontWeight:700,fontSize:11,textAlign:"center",minWidth:80}}>ขนาด (cm)</th>
                 {ZONES.map(z=>(
                   <th key={z} style={{padding:"8px 32px",background:ZONE_COLORS[z],
                     border:`1px solid ${C.border}`,color:C.ink,fontWeight:700,
@@ -1499,10 +1501,18 @@ function FlashCostPage() {
               </tr>
             </thead>
             <tbody>
-              {Array.from({length:curSvc.maxKg},(_,i)=>i+1).map(kg=>(
+              {Array.from({length:curSvc.maxKg},(_,i)=>i+1).map(kg=>{
+                const size = svc==="STD"
+                  ? (kg<=5?"≤100":kg===6?"≤85":kg===7?"≤90":kg===8?"≤95":kg===9?"≤100":`≤${100+(kg-9)*5}`)
+                  : svc==="BULKY"
+                  ? `${kg*10}`
+                  : (kg<=5?`${35+kg*5}`:kg<=9?`${80+(kg-5)*5}`:kg<=20?`${(kg<=10?100:kg<=15?100+(kg-10)*5:125+(kg-15)*5)}`:"-");
+                return (
                 <tr key={kg} style={{background:kg%2===0?C.bg+"80":"white"}}>
                   <td style={{padding:"2px 16px",border:`1px solid ${C.borderFaint}`,
                     textAlign:"center",fontWeight:700,color:C.inkMid}}>{kg}</td>
+                  <td style={{padding:"2px 12px",border:`1px solid ${C.borderFaint}`,
+                    textAlign:"center",fontSize:11,color:C.inkFaint}}>{size}</td>
                   {ZONES.map(z=>{
                     const t=getTable(svc,z); const val=t?getRate(t.id,kg):0;
                     return(
@@ -1516,7 +1526,8 @@ function FlashCostPage() {
                     );
                   })}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1765,6 +1776,8 @@ function DHLCostPage() {
                 <tr>
                   <th style={{padding:"8px 16px",background:C.bg,border:`1px solid ${C.border}`,
                     color:C.inkFaint,fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>น้ำหนัก (g)</th>
+                  <th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.border}`,
+                    color:C.inkFaint,fontWeight:700,fontSize:11,textAlign:"center",minWidth:90,whiteSpace:"nowrap"}}>ขนาด (cm)</th>
                   {curZones.map(z=>(
                     <th key={z} style={{padding:"8px 32px",background:ZONE_COLORS[z],
                       border:`1px solid ${C.border}`,color:C.ink,fontWeight:700,
@@ -1773,12 +1786,17 @@ function DHLCostPage() {
                 </tr>
               </thead>
               <tbody>
-                {curRates.map((row,i)=>(
+                {curRates.map((row,i)=>{
+                  const gTo=row.weight_g_to;
+                  const dim=gTo<=1000?"≤70":gTo<=2000?"≤80":gTo<=5000?"≤90":gTo<=10000?"≤100":gTo<=15000?"≤110":gTo<=20000?"≤120":"≤130";
+                  return (
                   <tr key={row.id} style={{background:i%2===0?C.bg+"80":"white"}}>
                     <td style={{padding:"4px 16px",border:`1px solid ${C.borderFaint}`,
                       fontWeight:600,color:C.inkMid,whiteSpace:"nowrap"}}>
                       {row.weight_g_from.toLocaleString()}–{row.weight_g_to.toLocaleString()}
                     </td>
+                    <td style={{padding:"4px 12px",border:`1px solid ${C.borderFaint}`,
+                      textAlign:"center",fontSize:11,color:C.inkFaint}}>{dim}</td>
                     {curZones.map(z=>{
                       const field=`cost_${z.toLowerCase()}`;
                       const val=row[field]||0;
@@ -1796,7 +1814,8 @@ function DHLCostPage() {
                       );
                     })}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1973,6 +1992,8 @@ function SPXCostPage() {
               <tr>
                 <th style={{padding:"8px 16px",background:C.bg,border:`1px solid ${C.border}`,
                   color:C.inkFaint,fontWeight:700,fontSize:11,textAlign:"center",minWidth:56}}>KG</th>
+                <th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.border}`,
+                  color:C.inkFaint,fontWeight:700,fontSize:11,textAlign:"center",minWidth:80}}>ขนาด (cm)</th>
                 {ZONES.map(z=>(
                   <th key={z} style={{padding:"8px 32px",background:ZONE_COLORS[z],
                     border:`1px solid ${C.border}`,color:C.ink,fontWeight:700,
@@ -1981,10 +2002,14 @@ function SPXCostPage() {
               </tr>
             </thead>
             <tbody>
-              {Array.from({length:50},(_,i)=>i+1).map(kg=>(
+              {Array.from({length:50},(_,i)=>i+1).map(kg=>{
+                const size=kg<=20?`${95+kg*5}`:"-";
+                return (
                 <tr key={kg} style={{background:kg%2===0?C.bg+"80":"white"}}>
                   <td style={{padding:"2px 16px",border:`1px solid ${C.borderFaint}`,
                     textAlign:"center",fontWeight:700,color:C.inkMid}}>{kg}</td>
+                  <td style={{padding:"2px 12px",border:`1px solid ${C.borderFaint}`,
+                    textAlign:"center",fontSize:11,color:C.inkFaint}}>{size}</td>
                   {ZONES.map(z=>{
                     const t=getTable(z); const val=t?getRate(t.id,kg):0;
                     return(
@@ -1998,7 +2023,8 @@ function SPXCostPage() {
                     );
                   })}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
