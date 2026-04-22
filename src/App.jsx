@@ -334,6 +334,7 @@ const FORM_FIELDS = [
   { key:"bank_account",    label:"เลขบัญชี",         placeholder:"xxx-x-xxxxx-x", half:true },
   { key:"bank_account_name",label:"ชื่อบัญชี",       placeholder:"ชื่อ-นามสกุล", half:true },
   { key:"line_group_id",   label:"LINE Group ID",   placeholder:"Cxxxxxxxx", half:true },
+  { key:"status",          label:"สถานะ",             placeholder:"",              half:true },
   { key:"notes",           label:"หมายเหตุ",          placeholder:"เงื่อนไขพิเศษ...", half:false },
 ];
 
@@ -899,6 +900,26 @@ function CustomersPage() {
     setChecked(prev => { const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
   };
 
+  const downloadCustomerTemplate = () => {
+    if (!window.XLSX) return;
+    const headers = ["account_code**","customer_name**","account_parent","status","phone","email",
+      "business_type","sales_owner","billing_cycle","cod_percent","tax_id","invoice_name",
+      "bank_name","bank_account","bank_account_name","line_group_id","notes"];
+    const example = [{
+      "account_code**":"CZ0108-49","customer_name**":"ตัวอย่าง บจ. จำกัด",
+      "account_parent":"CZ0108","status":"active","phone":"0812345678",
+      "email":"example@mail.com","business_type":"ร้านค้าออนไลน์",
+      "sales_owner":"เฟิส","billing_cycle":"เงินสดวางบิลวันถัดไป","cod_percent":2,
+      "tax_id":"0105565045320","invoice_name":"บริษัท ตัวอย่าง จำกัด",
+      "bank_name":"กสิกร","bank_account":"xxx-x-xxxxx-x","bank_account_name":"ชื่อ-นามสกุล",
+      "line_group_id":"Cxxxxxxxx","notes":"",
+    }];
+    const ws = window.XLSX.utils.json_to_sheet(example, { header:headers });
+    const wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "ลูกค้า");
+    window.XLSX.writeFile(wb, "template_customers.xlsx");
+  };
+
   const importCustomers = async (e) => {
     const file = e.target.files[0]; if (!file||!window.XLSX) return;
     setImportingCustomers(true);
@@ -943,16 +964,7 @@ function CustomersPage() {
         <div style={{ padding:"20px 16px 14px", borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
             <div style={{ fontSize:16, fontWeight:700, color:C.ink }}>รายชื่อลูกค้า</div>
-            <div style={{ display:"flex", gap:6 }}>
-              <label title="Import ลูกค้าจาก Excel"
-                style={{ padding:"5px 10px", fontSize:11, borderRadius:6, border:`1px solid ${C.border}`,
-                  background:C.bg, color:C.inkMid, cursor:xlsxReady?"pointer":"default",
-                  fontFamily:font, fontWeight:500 }}>
-                {importingCustomers?"...":"📤"}
-                <input type="file" accept=".xlsx" onChange={importCustomers}
-                  disabled={!xlsxReady||importingCustomers} style={{display:"none"}}/>
-              </label>
-            </div>
+
           </div>
           {/* Filter pills */}
           <div style={{ display:"flex", gap:4, marginBottom:12, flexWrap:"wrap" }}>
@@ -1054,7 +1066,13 @@ function CustomersPage() {
           <div style={{ fontSize:14 }}>เลือกลูกค้า หรือกด + เพิ่มลูกค้าใหม่</div>
         </div>
       )}
-      {showAdd && !selected && <AddCustomerPanel onSave={handleAdd} onCancel={()=>setShowAdd(false)} xlsxReady={xlsxReady} />}
+      {showAdd && !selected && <AddCustomerPanel 
+        onSave={handleAdd} 
+        onCancel={()=>setShowAdd(false)} 
+        xlsxReady={xlsxReady}
+        onImportCustomers={importCustomers}
+        onDownloadTemplate={downloadCustomerTemplate}
+      />}
       {selected && <CustomerDetail key={selected.id} customer={selected} onSaved={handleSaved} />}
 
       {/* Delete modal */}
@@ -1082,14 +1100,26 @@ function CustomersPage() {
 }
 
 // ── Add Customer Panel ────────────────────────────────────
-function AddCustomerPanel({ onSave, onCancel, xlsxReady }) {
+function AddCustomerPanel({ onSave, onCancel, xlsxReady, onImportCustomers, onDownloadTemplate }) {
   const [form, setForm] = useState({ ...FORM_DEFAULTS });
 
   return (
     <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:8 }}>
         <h2 style={{ fontSize:20, fontWeight:700, color:C.ink, margin:0 }}>เพิ่มลูกค้าใหม่</h2>
-        <Btn variant="ghost" onClick={onCancel}>ยกเลิก</Btn>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <label style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"8px 16px",
+            fontSize:12, borderRadius:8, border:`1.5px solid ${C.blue}`, background:C.surface,
+            color:C.blue, cursor:xlsxReady?"pointer":"default", fontFamily:font, fontWeight:600 }}>
+            📤 Import ลูกค้า (.xlsx)
+            <input type="file" accept=".xlsx" onChange={onImportCustomers}
+              disabled={!xlsxReady} style={{ display:"none" }}/>
+          </label>
+          <Btn variant="outline" onClick={onDownloadTemplate} disabled={!xlsxReady}>
+            📥 Download Template
+          </Btn>
+          <Btn variant="ghost" onClick={onCancel}>ยกเลิก</Btn>
+        </div>
       </div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"16px 20px", marginBottom:20 }}>
         {FORM_FIELDS.map(f => (
