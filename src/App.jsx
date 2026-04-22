@@ -2766,7 +2766,33 @@ function WFCustomersPage() {
               ))}
             </div>
 
-            {loadingPricing?<div style={{textAlign:"center",color:colors.textMuted,padding:24}}>กำลังโหลด...</div>:(
+            {tab==="info"?(
+              <div style={{paddingTop:8}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+                  {FORM_FIELDS.map(f=>(
+                    <div key={f.key} style={{gridColumn:f.half?"auto":"1/-1"}}>
+                      <label style={css.label}>{f.label}</label>
+                      {f.key==="payment_type"?(
+                        <select style={css.input} value={selected[f.key]||"cash"} onChange={e=>setSelected({...selected,[f.key]:e.target.value})}>
+                          <option value="cash">เงินสด</option><option value="credit">เครดิต</option>
+                        </select>
+                      ):f.key==="status"?(
+                        <select style={css.input} value={selected[f.key]||"active"} onChange={e=>setSelected({...selected,[f.key]:e.target.value})}>
+                          <option value="active">✅ ใช้งาน (Active)</option>
+                          <option value="inactive">⏸ หยุดชั่วคราว (Inactive)</option>
+                          <option value="lost">❌ Lost</option>
+                          <option value="stop_trade">🚫 Stop Trade</option>
+                        </select>
+                      ):(
+                        <input style={css.input} value={selected[f.key]||""} placeholder={f.placeholder||""}
+                          onChange={e=>setSelected({...selected,[f.key]:e.target.value})}/>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <button onClick={handleSave} style={{...css.btnPrimary,width:"auto",padding:"10px 24px",fontSize:13}}>💾 บันทึก</button>
+              </div>
+            ):{loadingPricing?<div style={{textAlign:"center",color:colors.textMuted,padding:24}}>กำลังโหลด...</div>:(
               <>
                 {tab==="flash"&&(
                   <div>
