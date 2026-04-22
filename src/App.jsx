@@ -610,6 +610,7 @@ function CustomerDetail({ customer, onSaved }) {
   };
 
   return (
+    <>
     <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
       {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:20 }}>
@@ -790,22 +791,6 @@ function CustomerDetail({ customer, onSaved }) {
         </div>
       )}
 
-      {/* Confirm Save Modal */}
-      <Modal open={showConfirm} onClose={() => setShowConfirm(false)} title="" width={380}>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:32, marginBottom:8 }}>💾</div>
-          <h3 style={{ fontSize:17, fontWeight:700, margin:"0 0 8px", color:C.ink }}>ยืนยันการบันทึก</h3>
-          <p style={{ color:C.inkMid, fontSize:14, margin:"0 0 20px" }}>
-            ต้องการบันทึกการเปลี่ยนแปลงข้อมูลของ<br/>
-            <strong style={{ color:C.ink }}>{customer.account_code}</strong> ใช่ไหม?
-          </p>
-          <div style={{ display:"flex", gap:10 }}>
-            <Btn variant="ghost" onClick={() => setShowConfirm(false)} style={{ flex:1 }}>ยกเลิก</Btn>
-            <Btn onClick={doSave} style={{ flex:1 }}>✅ ยืนยัน บันทึก</Btn>
-          </div>
-        </div>
-      </Modal>
-
       {/* Sender Tab */}
       {tab === "sender" && (
         loadingPricing ? <Spinner/> :
@@ -845,6 +830,21 @@ function CustomerDetail({ customer, onSaved }) {
         </div>
       )}
     </div>
+    <Modal open={showConfirm} onClose={() => setShowConfirm(false)} title="" width={380}>
+      <div style={{ textAlign:"center" }}>
+        <div style={{ fontSize:32, marginBottom:8 }}>💾</div>
+        <h3 style={{ fontSize:17, fontWeight:700, margin:"0 0 8px", color:C.ink }}>ยืนยันการบันทึก</h3>
+        <p style={{ color:C.inkMid, fontSize:14, margin:"0 0 20px" }}>
+          ต้องการบันทึกการเปลี่ยนแปลงข้อมูลของ<br/>
+          <strong style={{ color:C.ink }}>{customer.account_code}</strong> ใช่ไหม?
+        </p>
+        <div style={{ display:"flex", gap:10 }}>
+          <Btn variant="ghost" onClick={() => setShowConfirm(false)} style={{ flex:1 }}>ยกเลิก</Btn>
+          <Btn onClick={doSave} style={{ flex:1 }}>✅ ยืนยัน บันทึก</Btn>
+        </div>
+      </div>
+    </Modal>
+    </>
   );
 }
 
