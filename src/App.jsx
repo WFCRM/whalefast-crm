@@ -1292,9 +1292,10 @@ function FlashCostPage() {
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
 
   const SVCS = [
-    {key:"STD",  label:"มาตรฐาน", color:C.green,  maxKg:50},
-    {key:"BULKY",label:"Bulky",   color:C.amber,  maxKg:100},
-    {key:"FRUIT",label:"ผลไม้",   color:C.purple, maxKg:50},
+    {key:"STD",   label:"มาตรฐาน",     color:C.green,  maxKg:50},
+    {key:"STD100",label:"100cm",        color:C.teal||"#0891B2", maxKg:50},
+    {key:"BULKY", label:"Bulky",        color:C.amber,  maxKg:100},
+    {key:"FRUIT", label:"ผลไม้",        color:C.purple, maxKg:50},
   ];
   const ZONES = ["BKK","UPC"];
   const ZONE_COLORS = {BKK:"#FFFBEB", UPC:"#F0FDF4"};
@@ -1420,7 +1421,7 @@ function FlashCostPage() {
           const rows=window.XLSX.utils.sheet_to_json(ws,{defval:0});
           for(const row of rows){
             const kg=parseInt(row["kg"]||row["KG"]||row["น้ำหนัก"])||0; if(!kg) continue;
-            for(const s of ["STD","BULKY","FRUIT"]) for(const z of ["BKK","UPC"]){
+            for(const s of ["STD","STD100","BULKY","FRUIT"]) for(const z of ["BKK","UPC"]){
               const price=parseFloat(row[`${s}_${z}`])||0;
               if(price>0){const tid=await ensureTable(s,z);if(tid){await updateRate(tid,kg,price);count++;}}
             }
@@ -1436,11 +1437,11 @@ function FlashCostPage() {
   const handleTemplate = () => {
     if(!window.XLSX) return;
     const cols=["kg"];
-    ["STD","BULKY","FRUIT"].forEach(s=>["BKK","UPC"].forEach(z=>cols.push(`${s}_${z}`)));
+    ["STD","STD100","BULKY","FRUIT"].forEach(s=>["BKK","UPC"].forEach(z=>cols.push(`${s}_${z}`)));
     const maxKg=100;
     const rows=Array.from({length:maxKg},(_,i)=>{
       const row={kg:i+1};
-      ["STD","BULKY","FRUIT"].forEach(s=>["BKK","UPC"].forEach(z=>{
+      ["STD","STD100","BULKY","FRUIT"].forEach(s=>["BKK","UPC"].forEach(z=>{
         const t=getTable(s,z); row[`${s}_${z}`]=t?(getRate(t.id,i+1)||""):"";
       })); return row;
     });
@@ -1480,6 +1481,7 @@ function FlashCostPage() {
               outline:svc===s.key?"none":`1.5px solid ${C.border}`}}>
             {s.label}
             {s.key==="BULKY"&&<span style={{fontSize:10,marginLeft:5,opacity:0.8}}>1–100 kg</span>}
+            {s.key==="STD100"&&<span style={{fontSize:10,marginLeft:5,opacity:0.8}}>≤100cm</span>}
           </button>
         ))}
       </div>
@@ -1503,10 +1505,14 @@ function FlashCostPage() {
             <tbody>
               {Array.from({length:curSvc.maxKg},(_,i)=>i+1).map(kg=>{
                 const size = svc==="STD"
-                  ? (kg<=5?"≤100":kg===6?"≤85":kg===7?"≤90":kg===8?"≤95":kg===9?"≤100":`≤${100+(kg-9)*5}`)
+                  ? (kg<=5?"≤80":kg===6?"≤85":kg===7?"≤90":kg===8?"≤95":`≤${95+(kg-8)*5}`)
+                  : svc==="STD100"
+                  ? (kg<=9?"≤100":kg===10?"≤105":kg===11?"≤110":kg===12?"≤115":kg<=50?`≤${100+(kg-9)*5}`:"≤100")
                   : svc==="BULKY"
-                  ? `${kg*10}`
-                  : (kg<=5?`${35+kg*5}`:kg<=9?`${80+(kg-5)*5}`:kg<=20?`${(kg<=10?100:kg<=15?100+(kg-10)*5:125+(kg-15)*5)}`:"-");
+                  ? (kg<=6?"60":`${60+(kg-6)*10}`)
+                  : svc==="FRUIT"
+                  ? (kg===1?"40":kg===2?"50":kg===3?"60":kg===4?"70":kg===5?"80":kg===6?"85":kg===7?"90":kg===8?"95":kg===9?"100":`≤${100+(kg-9)*5}`)
+                  : "—";
                 return (
                 <tr key={kg} style={{background:kg%2===0?C.bg+"80":"white"}}>
                   <td style={{padding:"2px 16px",border:`1px solid ${C.borderFaint}`,
