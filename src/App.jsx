@@ -1640,67 +1640,6 @@ function CarrierRatePage({ carrierKey, carrierColor }) {
     reader.readAsArrayBuffer(file);
   };
 
-  const handleImport = async (e) => {
-    const file = e.target.files[0]; if (!file || !window.XLSX) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const wb = window.XLSX.read(ev.target.result, { type:"array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = window.XLSX.utils.sheet_to_json(ws, { defval:0 });
-        if (!rows.length) { alert("ไม่พบข้อมูล"); return; }
-
-        // Delete existing overrides for this customer/carrier/service
-        await sb.del(
-          `customer_rate_overrides?account_code=eq.${encodeURIComponent(customer.account_code)}&carrier_code=eq.${carrier}&service_type=eq.${serviceType}`
-        );
-
-        // Build new overrides from Excel
-        const batch = [];
-        for (const row of rows) {
-          const kg = parseFloat(row["KG"] || row["kg"] || row["Weight"] || 0);
-          if (!kg) continue;
-          for (const route of ALL_ROUTES) {
-            const price = parseFloat(row[route]) || 0;
-            const defVal = getDefault(kg, route);
-            // Only save if different from default
-            if (price > 0 && price !== defVal) {
-              batch.push({
-                customer_id: customer.id,
-                account_code: customer.account_code,
-                carrier_code: carrier,
-                service_type: serviceType,
-                weight: kg,
-                route: route,
-                sell_price: price,
-                is_active: true,
-              });
-            }
-          }
-        }
-
-        // Insert in batches
-        if (batch.length > 0) {
-          for (let i = 0; i < batch.length; i += 50) {
-            await fetch(`${SUPABASE_URL}/rest/v1/customer_rate_overrides`, {
-              method: "POST",
-              headers: { ...sbHeaders(getToken()), Prefer:"resolution=merge-duplicates" },
-              body: JSON.stringify(batch.slice(i, i+50)),
-            });
-          }
-        }
-
-        // Reload overrides
-        const ovs = await sb.get(
-          `customer_rate_overrides?account_code=eq.${encodeURIComponent(customer.account_code)}&carrier_code=eq.${carrier}&service_type=eq.${serviceType}&is_active=eq.true&order=weight.asc`
-        );
-        setOverrides(Array.isArray(ovs) ? ovs : []);
-        alert(`✅ Import สำเร็จ ${batch.length} ราคาพิเศษ`);
-      } catch(err) { alert("Error: " + err.message); }
-      e.target.value = "";
-    };
-    reader.readAsArrayBuffer(file);
-  };
 
   const handleExport = () => {
     if (!window.XLSX || !rows.length) return;
