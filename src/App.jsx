@@ -2747,6 +2747,36 @@ function WFCustomersPage() {
         )}
       </div>
     </div>
+    {/* Delete Confirm Modal */}
+    {showDeleteModal&&(
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:"#fff",borderRadius:16,padding:28,maxWidth:380,width:"90%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)",fontFamily:font}}>
+          <div style={{fontSize:32,textAlign:"center",marginBottom:8}}>🗑</div>
+          <div style={{fontSize:17,fontWeight:700,textAlign:"center",marginBottom:8}}>ยืนยันการลบ</div>
+          <div style={{fontSize:14,color:colors.textMuted,textAlign:"center",marginBottom:8}}>
+            ต้องการลบ <b style={{color:colors.danger}}>{checkedIds.size} ลูกค้า</b> ที่เลือกใช่ไหม?
+          </div>
+          <div style={{fontSize:12,color:colors.danger,background:colors.dangerLight,padding:"8px 12px",borderRadius:8,marginBottom:20,textAlign:"center"}}>
+            ⚠️ ข้อมูลราคาขาย, Surcharge Override และ Sender Mapping จะถูกลบด้วย
+          </div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>setShowDeleteModal(false)} disabled={deleting}
+              style={{flex:1,padding:"11px 0",borderRadius:8,border:`1.5px solid ${colors.border}`,background:"transparent",color:colors.text,cursor:"pointer",fontFamily:font,fontSize:14}}>
+              ยกเลิก
+            </button>
+            <button disabled={deleting} onClick={async()=>{
+              setDeleting(true);
+              const session=JSON.parse(localStorage.getItem("wf_session")||"null");const token=session?.access_token;
+              for(const id of checkedIds){await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?id=eq.${id}`,{method:"DELETE",headers:supabaseHeaders(token)});}
+              if(selected&&checkedIds.has(selected.id))setSelected(null);
+              setCheckedIds(new Set());setShowDeleteModal(false);setDeleting(false);loadCustomers();
+            }} style={{flex:1,padding:"11px 0",borderRadius:8,border:"none",background:colors.danger,color:"#fff",cursor:"pointer",fontFamily:font,fontSize:14,fontWeight:700}}>
+              {deleting?"⏳ กำลังลบ...":`🗑 ลบ ${checkedIds.size} รายการ`}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </>
   );
 }
@@ -3263,37 +3293,6 @@ function SellPricingPage() {
         )}
       </div>
     </div>
-    {/* Delete Confirm Modal */}
-    {showDeleteModal&&(
-      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div style={{background:"#fff",borderRadius:16,padding:28,maxWidth:380,width:"90%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)",fontFamily:font}}>
-          <div style={{fontSize:32,textAlign:"center",marginBottom:8}}>🗑</div>
-          <div style={{fontSize:17,fontWeight:700,textAlign:"center",marginBottom:8}}>ยืนยันการลบ</div>
-          <div style={{fontSize:14,color:colors.textMuted,textAlign:"center",marginBottom:8}}>
-            ต้องการลบ <b style={{color:colors.danger}}>{checkedIds.size} ลูกค้า</b> ที่เลือกใช่ไหม?
-          </div>
-          <div style={{fontSize:12,color:colors.danger,background:colors.dangerLight,padding:"8px 12px",borderRadius:8,marginBottom:20,textAlign:"center"}}>
-            ⚠️ ข้อมูลราคาขาย, Surcharge Override และ Sender Mapping จะถูกลบด้วย
-          </div>
-          <div style={{display:"flex",gap:10}}>
-            <button onClick={()=>setShowDeleteModal(false)} disabled={deleting}
-              style={{flex:1,padding:"11px 0",borderRadius:8,border:`1.5px solid ${colors.border}`,background:"transparent",color:colors.text,cursor:"pointer",fontFamily:font,fontSize:14}}>
-              ยกเลิก
-            </button>
-            <button disabled={deleting} onClick={async()=>{
-              setDeleting(true);
-              const session=JSON.parse(localStorage.getItem("wf_session")||"null");const token=session?.access_token;
-              for(const id of checkedIds){await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?id=eq.${id}`,{method:"DELETE",headers:supabaseHeaders(token)});}
-              if(selected&&checkedIds.has(selected.id))setSelected(null);
-              setCheckedIds(new Set());setShowDeleteModal(false);setDeleting(false);loadCustomers();
-            }} style={{flex:1,padding:"11px 0",borderRadius:8,border:"none",background:colors.danger,color:"#fff",cursor:"pointer",fontFamily:font,fontSize:14,fontWeight:700}}>
-              {deleting?"⏳ กำลังลบ...":`🗑 ลบ ${checkedIds.size} รายการ`}
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
-    </>
   );
 }
 
