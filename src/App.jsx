@@ -842,6 +842,7 @@ function CustomersPage() {
   const [deleting, setDeleting] = useState(false);
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
   const [importingCustomers, setImportingCustomers] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (!window.XLSX) {
@@ -895,6 +896,40 @@ function CustomersPage() {
   const toggleCheck = (id, e) => {
     e.stopPropagation();
     setChecked(prev => { const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
+  };
+
+  const exportCustomers = async () => {
+    if (!window.XLSX) return;
+    setExporting(true);
+    try {
+      // Fetch ALL customers (no filter, no search limit)
+      const data = await sb.get("wf_customers?select=*&order=account_code.asc");
+      const rows = (Array.isArray(data) ? data : []).map(c => ({
+        "account_code":        c.account_code || "",
+        "customer_name":       c.customer_name || "",
+        "status":              c.status || "",
+        "account_parent":      c.account_parent || "",
+        "phone":               c.phone || "",
+        "email":               c.email || "",
+        "business_type":       c.business_type || "",
+        "sales_owner":         c.sales_owner || "",
+        "billing_cycle":       c.billing_cycle || "",
+        "cod_percent":         c.cod_percent || 2,
+        "tax_id":              c.tax_id || "",
+        "invoice_name":        c.invoice_name || "",
+        "bank_name":           c.bank_name || "",
+        "bank_account":        c.bank_account || "",
+        "bank_account_name":   c.bank_account_name || "",
+        "line_group_id":       c.line_group_id || "",
+        "notes":               c.notes || "",
+      }));
+      const ws = window.XLSX.utils.json_to_sheet(rows);
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, "ลูกค้า");
+      const today = new Date().toISOString().split("T")[0];
+      window.XLSX.writeFile(wb, `customers_export_${today}.xlsx`);
+    } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
+    setExporting(false);
   };
 
   const downloadCustomerTemplate = () => {
@@ -960,7 +995,17 @@ function CustomersPage() {
         {/* Header */}
         <div style={{ padding:"20px 16px 14px", borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <div style={{ fontSize:16, fontWeight:700, color:C.ink }}>รายชื่อลูกค้า</div>
+            <button onClick={exportCustomers} disabled={!xlsxReady || exporting}
+              title="Export ลูกค้าทั้งหมดเป็น Excel"
+              style={{ padding:"5px 10px", fontSize:11, borderRadius:6,
+                border:`1px solid ${C.green}`, background:C.greenBg,
+                color:C.green, cursor:xlsxReady?"pointer":"default",
+                fontFamily:font, fontWeight:600, opacity:exporting?0.6:1 }}>
+              {exporting ? "..." : "⬇ Excel"}
+            </button>
+          </div>
 
           </div>
           {/* Filter pills */}
