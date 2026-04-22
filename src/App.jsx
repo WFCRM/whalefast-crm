@@ -1290,6 +1290,7 @@ function FlashCostPage() {
   const [rates, setRates] = useState({});
   const [loading, setLoading] = useState(true);
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const SVCS = [
     {key:"STD",   label:"มาตรฐาน",     color:C.green,  maxKg:50},
@@ -1314,7 +1315,7 @@ function FlashCostPage() {
       s.onload=()=>setXlsxReady(true); document.head.appendChild(s);
     }
     loadData();
-  }, []);
+  }, [refreshKey]);
 
   const loadData = async () => {
     setLoading(true);
@@ -1427,7 +1428,7 @@ function FlashCostPage() {
             }
           }
         }
-        alert(`✅ Import Flash สำเร็จ ${count} rates`); loadData();
+        alert(`✅ Import Flash สำเร็จ ${count} rates`); setRefreshKey(k=>k+1);
       } catch(err){alert("Error: "+err.message);}
       e.target.value="";
     };
@@ -1507,7 +1508,7 @@ function FlashCostPage() {
                 const size = svc==="STD"
                   ? (kg<=5?"≤80":kg===6?"≤85":kg===7?"≤90":kg===8?"≤95":`≤${95+(kg-8)*5}`)
                   : svc==="STD100"
-                  ? (kg<=9?"≤100":kg===10?"≤105":kg===11?"≤110":kg===12?"≤115":kg<=50?`≤${100+(kg-9)*5}`:"≤100")
+                  ? (kg<=9?"≤100":kg===10?"100":`≤${100+(kg-9)*5}`)
                   : svc==="BULKY"
                   ? (kg<=6?"60":`${60+(kg-6)*10}`)
                   : svc==="FRUIT"
@@ -1594,7 +1595,7 @@ function DHLCostPage() {
       s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
       s.onload=()=>setXlsxReady(true);document.head.appendChild(s);}
     loadData();
-  },[]);
+  },[refreshKey]);
 
   const loadData = async () => {
     setLoading(true);
@@ -1863,6 +1864,7 @@ function SPXCostPage() {
   const [loading, setLoading] = useState(true);
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
   const [remote, setRemote] = useState(50);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const ZONES=["BKK","UPC"];
   const ZONE_COLORS={BKK:"#FFFBEB",UPC:"#F0FDF4"};
@@ -1951,7 +1953,7 @@ function SPXCostPage() {
             }
           }
         }
-        alert(`✅ Import SPX สำเร็จ ${count} rates`); loadData();
+        alert(`✅ Import SPX สำเร็จ ${count} rates`); setRefreshKey(k=>k+1);
       } catch(err){alert("Error: "+err.message);}
       e.target.value="";
     };
