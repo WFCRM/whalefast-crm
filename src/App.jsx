@@ -495,7 +495,6 @@ function CustomerDetail({ customer, onSaved }) {
   const [senders, setSenders] = useState([]);
   const [loadingPricing, setLoadingPricing] = useState(false);
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
-  const rightPanelRef = useRef(null);
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState(null);
   const [flashType, setFlashType] = useState("STD");
@@ -505,11 +504,6 @@ function CustomerDetail({ customer, onSaved }) {
     originalData.current = { ...customer };
     setTab("info"); 
   }, [customer.id]);
-
-  // Scroll right panel to top when customer changes
-  useEffect(() => {
-    if (rightPanelRef.current) rightPanelRef.current.scrollTop = 0;
-  }, [selected?.id]);
 
   useEffect(() => {
     if (!window.XLSX) {
@@ -2242,6 +2236,11 @@ function SellPricingPage() {
   const [overrides, setOverrides] = useState([]);
   const [loadingRates, setLoadingRates] = useState(false);
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
+  const rightPanelRef = useRef(null);
+
+  useEffect(() => {
+    if (rightPanelRef.current) rightPanelRef.current.scrollTop = 0;
+  }, [selected?.id]);
 
   useEffect(() => {
     if (!window.XLSX) {
