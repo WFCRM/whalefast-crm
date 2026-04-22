@@ -2874,7 +2874,7 @@ function WFCustomersPage() {
                 )}
               </>
             ))
-            )}
+            }
           </div>
         )}
       </div>
