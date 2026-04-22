@@ -2323,7 +2323,20 @@ function SellPricingPage() {
           {loading ? <Spinner/> : customers.map(c => {
             const isSel = selected?.id === c.id;
             return (
-              <div key={c.id} onClick={() => { setSelected(c); setCarrier("FLASH"); setSvcKey("STD"); }}
+              <div key={c.id} onClick={() => {
+                setSelected(c);
+                // Set initial carrier to customer's first carrier
+                const custCarriers = Array.isArray(c.carriers) && c.carriers.length > 0 ? c.carriers : null;
+                if (custCarriers) {
+                  const firstCarrier = custCarriers[0].startsWith("FLASH") ? "FLASH" :
+                    custCarriers[0] === "DHL" ? "DHL" : custCarriers[0];
+                  const carrierCfg = SELL_CARRIER_TABS.find(ct => ct.key === firstCarrier);
+                  setCarrier(firstCarrier);
+                  setSvcKey(carrierCfg?.services[0]?.key || "STD");
+                } else {
+                  setCarrier("FLASH"); setSvcKey("STD");
+                }
+              }}
                 style={{ padding:"10px 14px", borderBottom:`1px solid ${C.borderFaint}`,
                   background:isSel?C.greenBg:"transparent", cursor:"pointer",
                   borderLeft:isSel?`3px solid ${C.green}`:"3px solid transparent",
@@ -2384,7 +2397,10 @@ function SellPricingPage() {
                 return cust.carriers.includes(ct.key);
               }).map(ct => (
                 <button key={ct.key}
-                  onClick={() => { setCarrier(ct.key); setSvcKey(ct.services[0].key); }}
+                  onClick={() => { 
+                    setCarrier(ct.key); 
+                    setSvcKey(ct.services[0]?.key || "STD");
+                  }}
                   style={{ padding:"9px 20px", fontSize:13, border:"none", cursor:"pointer",
                     fontFamily:font, fontWeight:carrier===ct.key?700:400,
                     background:"transparent",
