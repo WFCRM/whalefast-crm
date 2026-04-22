@@ -2137,6 +2137,10 @@ function WFCustomersPage() {
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [statusFilter, setStatusFilter] = useState("active");
+  const [customerStats, setCustomerStats] = useState({ total:0, active:0, inactive:0, lost:0, stop_trade:0, thisMonth:0, lastMonth:0 });
+  const [checkedIds, setCheckedIds] = useState(new Set());
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState(null);
   const [tab, setTab] = useState("info"); // info | flash | dhl | surcharge | sender
   const [showAddForm, setShowAddForm] = useState(false);
@@ -2152,7 +2156,6 @@ function WFCustomersPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
 
-  const [customerStats, setCustomerStats] = useState({ total:0, active:0, inactive:0 });
   const [form, setForm] = useState({
     account_code:"", account_parent:"CZ0108", customer_name:"", status:"active",
     phone:"", email:"", address:"", business_type:"", product_type:"",
@@ -2175,17 +2178,27 @@ function WFCustomersPage() {
     setLoading(true);
     const session = JSON.parse(localStorage.getItem("wf_session") || "null");
     const token = session?.access_token;
-    // Load stats
-    const [rAll, rActive, rInactive] = await Promise.all([
+    const now = new Date();
+    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const firstOfLastMonth = new Date(now.getFullYear(), now.getMonth()-1, 1).toISOString();
+    const [rAll, rActive, rInactive, rLost, rStop, rThisM, rLastM] = await Promise.all([
       fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id`, { headers: supabaseHeaders(token) }),
       fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&status=eq.active`, { headers: supabaseHeaders(token) }),
       fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&status=eq.inactive`, { headers: supabaseHeaders(token) }),
+      fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&status=eq.lost`, { headers: supabaseHeaders(token) }),
+      fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&status=eq.stop_trade`, { headers: supabaseHeaders(token) }),
+      fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&created_at=gte.${firstOfMonth}`, { headers: supabaseHeaders(token) }),
+      fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=id&created_at=gte.${firstOfLastMonth}&created_at=lt.${firstOfMonth}`, { headers: supabaseHeaders(token) }),
     ]);
-    const [dAll, dActive, dInactive] = await Promise.all([rAll.json(), rActive.json(), rInactive.json()]);
+    const [dAll,dAct,dInact,dLost,dStop,dThisM,dLastM] = await Promise.all([rAll.json(),rActive.json(),rInactive.json(),rLost.json(),rStop.json(),rThisM.json(),rLastM.json()]);
     setCustomerStats({
-      total: Array.isArray(dAll) ? dAll.length : 0,
-      active: Array.isArray(dActive) ? dActive.length : 0,
-      inactive: Array.isArray(dInactive) ? dInactive.length : 0,
+      total: Array.isArray(dAll)?dAll.length:0,
+      active: Array.isArray(dAct)?dAct.length:0,
+      inactive: Array.isArray(dInact)?dInact.length:0,
+      lost: Array.isArray(dLost)?dLost.length:0,
+      stop_trade: Array.isArray(dStop)?dStop.length:0,
+      thisMonth: Array.isArray(dThisM)?dThisM.length:0,
+      lastMonth: Array.isArray(dLastM)?dLastM.length:0,
     });
     let url = `${SUPABASE_URL}/rest/v1/wf_customers?select=*&order=account_code.asc`;
     if (statusFilter) url += `&status=eq.${statusFilter}`;
@@ -2357,21 +2370,15 @@ function WFCustomersPage() {
   const downloadTemplate = () => {
     if (!window.XLSX || !selected) return;
     const wb = window.XLSX.utils.book_new();
-    // Flash sheet — แสดงทุก service_type ที่มี + แถว STD/BULKY/FRUIT ว่างไว้สำหรับเพิ่ม
-    const flashHeaders = ["account_code**", "service_type**(STD/BULKY/FRUIT)", "zone**(BKK/UPC)", ...Array.from({length:50},(_,i)=>i+1)];
-    const flashSvcTypes = [...new Set(pricingTables.filter(t=>t.carrier_code==="FLASH").map(t=>t.service_type||"STD"))];
-    // ถ้าไม่มีข้อมูลเลย ใส่ STD ว่างไว้
-    const svcToShow = flashSvcTypes.length > 0 ? flashSvcTypes : ["STD"];
-    const flashRows = [];
-    for (const svc of svcToShow) {
-      for (const zone of ["BKK","UPC"]) {
-        const t = pricingTables.find(t => t.carrier_code==="FLASH" && (t.service_type||"STD")===svc && t.zone===zone);
-        const rates = t ? (pricingRates[t.id]||[]) : [];
-        const row = { "account_code**": selected.account_code, "service_type**(STD/BULKY/FRUIT)": svc, "zone**(BKK/UPC)": zone };
-        rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
-        flashRows.push(row);
-      }
-    }
+    // Flash sheet
+    const flashHeaders = ["account_code**", "zone**(BKK/UPC)", ...Array.from({length:50},(_,i)=>i+1)];
+    const flashRows = ["BKK","UPC"].map(zone => {
+      const t = pricingTables.find(t => t.carrier_code==="FLASH" && t.zone===zone);
+      const rates = t ? (pricingRates[t.id] || []) : [];
+      const row = { "account_code**": selected.account_code, "zone**(BKK/UPC)": zone };
+      rates.forEach(r => { row[r.weight_kg] = r.sell_price; });
+      return row;
+    });
     const ws1 = window.XLSX.utils.json_to_sheet(flashRows, { header: flashHeaders });
     window.XLSX.utils.book_append_sheet(wb, ws1, "ราคาขาย Flash");
     // DHL sheet
@@ -2495,20 +2502,20 @@ function WFCustomersPage() {
 
   // Customer form fields
   const FORM_FIELDS = [
-    { key:"account_code", label:"Account Code **", req:true, placeholder:"เช่น CZ0108-49", half:true },
-    { key:"customer_name", label:"ชื่อลูกค้า **", req:true, placeholder:"ชื่อลูกค้า", half:true },
-    { key:"account_parent", label:"Account แม่", placeholder:"เช่น CZ0108, DHL", half:true },
+    { key:"account_code", label:"Account Code **", req:true, placeholder:"CZ0108-49", half:true },
+    { key:"customer_name", label:"ชื่อลูกค้า **", req:true, placeholder:"49ร้าน สตอรี่ ทอยด์", half:true },
+    { key:"account_parent", label:"Account แม่", placeholder:"CZ0108", half:true },
     { key:"phone", label:"เบอร์โทร", placeholder:"เบอร์โทรผู้ติดต่อ", half:true },
     { key:"email", label:"อีเมล", placeholder:"อีเมลผู้ติดต่อ", half:true },
     { key:"sales_owner", label:"เซลล์", placeholder:"ชื่อเซลล์", half:true },
     { key:"business_type", label:"ประเภทธุรกิจ", placeholder:"เช่น ร้านค้าออนไลน์", half:true },
-    { key:"cod_percent", label:"COD %", placeholder:"เช่น 2, 1.7, 1.5", half:true },
-    { key:"billing_cycle", label:"รอบชำระ", placeholder:"เช่น เงินสดวางบิลวันถัดไป", half:false },
-    { key:"tax_id", label:"Tax ID", placeholder:"เลขประจำตัวผู้เสียภาษี 13 หลัก", half:true },
-    { key:"invoice_name", label:"ชื่อออกใบกำกับ", placeholder:"ชื่อบริษัท/บุคคล", half:true },
-    { key:"bank_name", label:"ธนาคาร", placeholder:"ชื่อธนาคาร", half:true },
-    { key:"bank_account", label:"เลขบัญชี", placeholder:"เลขบัญชีธนาคาร", half:true },
-    { key:"bank_account_name", label:"ชื่อบัญชี", placeholder:"ชื่อเจ้าของบัญชี", half:true },
+    { key:"cod_percent", label:"COD %", placeholder:"2", half:true },
+    { key:"billing_cycle", label:"รอบชำระ", placeholder:"เงินสดวางบิลวันถัดไป", half:false },
+    { key:"tax_id", label:"Tax ID", placeholder:"0000000000000", half:true },
+    { key:"invoice_name", label:"ชื่อออกใบกำกับ", placeholder:"บริษัท...", half:true },
+    { key:"bank_name", label:"ธนาคาร", placeholder:"กสิกร", half:true },
+    { key:"bank_account", label:"เลขบัญชี", placeholder:"xxx-x-xxxxx-x", half:true },
+    { key:"bank_account_name", label:"ชื่อบัญชี", placeholder:"ชื่อ-นามสกุล", half:true },
     { key:"line_group_id", label:"LINE Group ID", placeholder:"Cxxxxxxxx", half:true },
     { key:"notes", label:"หมายเหตุ", placeholder:"เงื่อนไขพิเศษ...", half:false },
   ];
@@ -2518,18 +2525,32 @@ function WFCustomersPage() {
       {/* LEFT: Customer list */}
       <div style={{ width:300, borderRight:`1px solid ${colors.border}`, display:"flex", flexDirection:"column", background:colors.card }}>
         <div style={{ padding:"16px 16px 10px", borderBottom:`1px solid ${colors.borderLight}` }}>
-          <div style={{ fontSize:16, fontWeight:700, color:colors.text, marginBottom:8 }}>ลูกค้า / ราคาขาย</div>
-          <div style={{ display:"flex", gap:6, marginBottom:8 }}>
-            {[
-              { label:"ทั้งหมด", value:customerStats.total, color:colors.text, bg:colors.bg },
-              { label:"ใช้งาน", value:customerStats.active, color:colors.primary, bg:colors.primaryLight },
-              { label:"ปิด", value:customerStats.inactive, color:colors.danger, bg:colors.dangerLight },
-            ].map(s=>(
-              <div key={s.label} style={{ flex:1, padding:"6px 4px", borderRadius:8, background:s.bg, textAlign:"center" }}>
-                <div style={{ fontSize:18, fontWeight:700, color:s.color }}>{s.value}</div>
-                <div style={{ fontSize:10, color:colors.textMuted }}>{s.label}</div>
-              </div>
-            ))}
+          <div style={{ fontSize:15, fontWeight:700, color:colors.text, marginBottom:8 }}>ลูกค้า / ราคาขาย</div>
+          <div style={{ background:colors.bg, borderRadius:10, padding:"10px 8px", marginBottom:8 }}>
+            <div style={{ display:"flex", gap:4, marginBottom:6 }}>
+              {[
+                {label:"ทั้งหมด",value:customerStats.total,color:colors.text},
+                {label:"ใช้งาน",value:customerStats.active,color:colors.primary},
+                {label:"หยุด",value:customerStats.inactive,color:"#757575"},
+                {label:"Lost",value:customerStats.lost,color:colors.danger},
+                {label:"Stop",value:customerStats.stop_trade,color:"#e8913a"},
+              ].map(s=>(
+                <div key={s.label} style={{flex:1,textAlign:"center"}}>
+                  <div style={{fontSize:16,fontWeight:700,color:s.color}}>{s.value}</div>
+                  <div style={{fontSize:9,color:colors.textMuted}}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{height:1,background:colors.borderLight,margin:"4px 0"}}/>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:colors.textMuted,padding:"2px 0"}}>
+              <span>📅 เดือนนี้ <b style={{color:colors.primary}}>+{customerStats.thisMonth}</b></span>
+              <span>เดือนก่อน <b>+{customerStats.lastMonth}</b></span>
+              {customerStats.thisMonth > customerStats.lastMonth
+                ? <span style={{color:colors.primary}}>▲ เพิ่มขึ้น</span>
+                : customerStats.thisMonth < customerStats.lastMonth
+                  ? <span style={{color:colors.danger}}>▼ ลดลง</span>
+                  : <span style={{color:colors.textMuted}}>= เท่ากัน</span>}
+            </div>
           </div>
           <div style={{ display:"flex", gap:6, marginBottom:8 }}>
             <input style={{ ...css.input, fontSize:12, padding:"7px 10px", flex:1 }}
@@ -2538,386 +2559,189 @@ function WFCustomersPage() {
               onKeyDown={e=>{ if(e.key==="Enter") setSearch(searchInput); }} />
             <button onClick={()=>setSearch(searchInput)} style={{ ...css.btnPrimary, width:"auto", padding:"7px 12px", fontSize:12 }}>ค้น</button>
           </div>
-          <div style={{ display:"flex", gap:4 }}>
-            {["active","inactive",""].map(s => (
-              <button key={s} onClick={()=>setStatusFilter(s)}
-                style={{ flex:1, padding:"5px 4px", fontSize:11, borderRadius:6, border:"none", cursor:"pointer", fontFamily:font,
-                  background: statusFilter===s ? colors.primary : colors.borderLight,
-                  color: statusFilter===s ? "#fff" : colors.text }}>
-                {s==="active"?"ใช้งาน":s==="inactive"?"ปิด":"ทั้งหมด"}
+          <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:6}}>
+            {[
+              {val:"",label:"ทั้งหมด",c:colors.text},
+              {val:"active",label:"ใช้งาน",c:colors.primary},
+              {val:"inactive",label:"หยุด",c:"#757575"},
+              {val:"lost",label:"Lost",c:colors.danger},
+              {val:"stop_trade",label:"Stop Trade",c:"#e8913a"},
+            ].map(s=>(
+              <button key={s.val} onClick={()=>{setStatusFilter(s.val);setCheckedIds(new Set());}}
+                style={{padding:"4px 8px",fontSize:10,borderRadius:6,border:`1.5px solid ${statusFilter===s.val?s.c:colors.borderLight}`,
+                  cursor:"pointer",fontFamily:font,fontWeight:500,
+                  background:statusFilter===s.val?s.c:"transparent",
+                  color:statusFilter===s.val?"#fff":s.c}}>
+                {s.label}
               </button>
             ))}
           </div>
         </div>
         <div style={{ flex:1, overflowY:"auto" }}>
-          <div style={{ padding:"8px 16px", borderBottom:`1px solid ${colors.borderLight}`, display:"flex", gap:6 }}>
-            <div onClick={()=>{setSelected(null);setShowAddForm(true);}}
-              style={{ flex:1, padding:"8px 10px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:colors.primary, fontSize:12, fontWeight:600, border:`1.5px solid ${colors.primary}` }}
-              onMouseEnter={e=>e.currentTarget.style.background=colors.primaryLight} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-              + เพิ่มลูกค้าใหม่
-            </div>
-            <button onClick={async()=>{
-              if(!window.XLSX) return;
-              const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-              // fetch all customers
-              const res=await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?select=*&order=account_code.asc&limit=1000`,{headers:supabaseHeaders(token)});
-              const data=await res.json();
-              if(!Array.isArray(data)||data.length===0){alert("ไม่มีข้อมูลลูกค้า");return;}
-              const headers=["account_code","customer_name","account_parent","status","phone","email","address","business_type","product_type","sales_owner","customer_category","payment_type","billing_cycle","cod_percent","tax_id","invoice_name","bank_name","bank_account","bank_account_name","line_group_id","notes"];
-              const rows=data.map(c=>headers.map(h=>c[h]||""));
-              const ws=window.XLSX.utils.aoa_to_sheet([headers,...rows]);
-              ws["!cols"]=headers.map(()=>({wch:18}));
-              const wb=window.XLSX.utils.book_new();
-              window.XLSX.utils.book_append_sheet(wb,ws,"ลูกค้า");
-              window.XLSX.writeFile(wb,`WF_Customers_${new Date().toISOString().slice(0,10)}.xlsx`);
-            }} disabled={!xlsxLoaded}
-              style={{ padding:"8px 10px", borderRadius:8, border:`1.5px solid ${colors.info||"#2196f3"}`, background:"transparent", color:colors.info||"#2196f3", cursor:"pointer", fontSize:11, fontFamily:font, fontWeight:500 }}
-              title="Export ข้อมูลลูกค้าทั้งหมด">
-              📥 Export
-            </button>
+          <div onClick={()=>{setSelected(null);setShowAddForm(true);}}
+            style={{ padding:"10px 16px", borderBottom:`1px solid ${colors.borderLight}`, cursor:"pointer", display:"flex", alignItems:"center", gap:8, color:colors.primary, fontSize:13, fontWeight:600 }}
+            onMouseEnter={e=>e.currentTarget.style.background=colors.primaryLight} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+            + เพิ่มลูกค้าใหม่
           </div>
+          {checkedIds.size > 0 && (
+            <div style={{padding:"7px 12px",background:"#FFF8E1",borderBottom:`1px solid ${colors.borderLight}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:12,color:"#E65100",fontWeight:600}}>เลือก {checkedIds.size} รายการ</span>
+              <button onClick={()=>setShowDeleteModal(true)}
+                style={{padding:"5px 12px",fontSize:12,borderRadius:6,border:"none",background:colors.danger,color:"#fff",cursor:"pointer",fontFamily:font,fontWeight:600}}>
+                🗑 ลบที่เลือก
+              </button>
+            </div>
+          )}
           {loading ? <div style={{ padding:20, textAlign:"center", color:colors.textMuted, fontSize:13 }}>กำลังโหลด...</div> :
             customers.length === 0 ? <div style={{ padding:20, textAlign:"center", color:colors.textLight, fontSize:12 }}>ไม่พบลูกค้า</div> :
             customers.map(c => (
-              <div key={c.id} onClick={()=>selectCustomer(c)}
-                style={{ padding:"10px 16px", borderBottom:`1px solid ${colors.borderLight}`, cursor:"pointer",
-                  background: selected?.id===c.id ? colors.primaryLight : "transparent" }}
-                onMouseEnter={e=>{ if(selected?.id!==c.id) e.currentTarget.style.background=colors.bg; }}
-                onMouseLeave={e=>{ if(selected?.id!==c.id) e.currentTarget.style.background="transparent"; }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-                  <div>
-                    <div style={{ fontSize:13, fontWeight:600, color: selected?.id===c.id ? colors.primary : colors.text }}>{c.account_code}</div>
-                    <div style={{ fontSize:11, color:colors.textMuted, marginTop:2 }}>{c.customer_name}</div>
-                    <div style={{ fontSize:10, color:colors.textLight }}>{c.phone}</div>
+              <div key={c.id}
+                style={{padding:"8px 12px",borderBottom:`1px solid ${colors.borderLight}`,
+                  background:selected?.id===c.id?colors.primaryLight:checkedIds.has(c.id)?"#FFF8E1":"transparent"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <input type="checkbox" checked={checkedIds.has(c.id)}
+                    onChange={e=>{setCheckedIds(prev=>{const s=new Set(prev);e.target.checked?s.add(c.id):s.delete(c.id);return s;});}}
+                    style={{cursor:"pointer",flexShrink:0}}/>
+                  <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>selectCustomer(c)}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{fontSize:12,fontWeight:600,color:selected?.id===c.id?colors.primary:colors.text}}>{c.account_code}</span>
+                      {c.status!=="active"&&<span style={{fontSize:9,padding:"1px 5px",borderRadius:4,fontWeight:600,
+                        background:c.status==="lost"?colors.dangerLight:c.status==="stop_trade"?"#FFF3E0":"#F5F5F5",
+                        color:c.status==="lost"?colors.danger:c.status==="stop_trade"?"#E65100":"#757575"}}>
+                        {c.status==="inactive"?"หยุด":c.status==="lost"?"Lost":"Stop"}
+                      </span>}
+                    </div>
+                    <div style={{fontSize:11,color:colors.textMuted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.customer_name}</div>
+                    {c.phone&&<div style={{fontSize:10,color:colors.textLight}}>{c.phone}</div>}
                   </div>
-                  <span onClick={async e=>{
-                    e.stopPropagation();
-                    if(!confirm(`ลบ ${c.account_code} - ${c.customer_name}?
-ข้อมูลราคาขายและ mapping จะถูกลบด้วย`)) return;
-                    const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-                    await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?id=eq.${c.id}`,{method:"DELETE",headers:supabaseHeaders(token)});
-                    if(selected?.id===c.id) setSelected(null);
-                    loadCustomers();
-                  }} style={{ color:colors.danger, cursor:"pointer", fontSize:14, padding:"2px 4px", opacity:0.5, flexShrink:0 }}
-                    onMouseEnter={e=>e.target.style.opacity="1"} onMouseLeave={e=>e.target.style.opacity="0.5"}
-                    title="ลบลูกค้า">
-                    ✕
-                  </span>
                 </div>
-            ))
-          }
+              </div>
+            ))}
         </div>
       </div>
 
-      {/* RIGHT: Detail panel */}
-      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
-        {/* Add new customer form */}
-        {showAddForm && !selected && (
+      {/* RIGHT: Pricing panel */}
+      <div style={{flex:1,overflowY:"auto",padding:"20px 24px"}}>
+        {!selected&&<div style={{textAlign:"center",padding:"60px 20px",color:colors.textLight}}>
+          <div style={{fontSize:40,marginBottom:12}}>◑</div>
+          <div style={{fontSize:14}}>เลือกลูกค้าจากรายการซ้ายเพื่อดู/แก้ไขราคาขาย</div>
+        </div>}
+        {selected&&(
           <div>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:8 }}>
-              <h3 style={{ fontSize:18, fontWeight:700 }}>เพิ่มลูกค้าใหม่</h3>
-              <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-                <button onClick={() => {
-                  if (!window.XLSX) return;
-                  const wb = window.XLSX.utils.book_new();
-                  const headers = ["account_code**","customer_name**","account_parent","status","phone","email","address","business_type","product_type","sales_owner","customer_category","payment_type","billing_cycle","cod_percent**","freelance_commission","tax_id","invoice_name","bank_name","bank_account","bank_account_name","line_group_id","notes"];
-                  const sample = [["CZ0108-49","49ร้าน สตอรี่ ทอยด์","CZ0108","active","0628269514","","","ร้านค้าออนไลน์","","WF","บริษัท","cash","เงินสดวางบิลวันถัดไป","2","","","","","","","",""]];
-                  const ws = window.XLSX.utils.aoa_to_sheet([headers, ...sample]);
-                  ws["!cols"] = headers.map(() => ({ wch: 18 }));
-                  window.XLSX.utils.book_append_sheet(wb, ws, "ลูกค้า");
-                  const instr = window.XLSX.utils.aoa_to_sheet([
-                    ["Column","คำอธิบาย"],
-                    ["account_code**","รหัส account เช่น CZ0108-49 (จำเป็น)"],
-                    ["customer_name**","ชื่อลูกค้า (จำเป็น)"],
-                    ["account_parent","account แม่ เช่น CZ0108, DHL"],
-                    ["status","active หรือ inactive"],
-                    ["payment_type","cash หรือ credit"],
-                    ["cod_percent**","% COD เช่น 2, 1.7, 1.5 (จำเป็น)"],
-                    ["billing_cycle","รอบชำระ เช่น เงินสดวางบิลวันถัดไป"],
-                    ["line_group_id","LINE Group ID เช่น Cxxxxxxxx"],
-                    ["","** = จำเป็นต้องกรอก"],
-                  ]);
-                  window.XLSX.utils.book_append_sheet(wb, instr, "คำอธิบาย");
-                  window.XLSX.writeFile(wb, "WF_Customer_Template.xlsx");
-                }} disabled={!xlsxLoaded}
-                  style={{ padding:"7px 14px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.primary}`, background:"transparent", color:colors.primary, cursor:xlsxLoaded?"pointer":"default", fontFamily:font, fontWeight:500 }}>
-                  📥 Download Template
-                </button>
-                <label style={{ padding:"7px 14px", fontSize:12, borderRadius:8, border:"1.5px solid #2196f3", background:"transparent", color:"#2196f3", cursor:xlsxLoaded?"pointer":"default", fontFamily:font, fontWeight:500 }}>
-                  {importing==="customers"?"กำลัง Import...":"📤 Import จาก Excel"}
-                  <input type="file" accept=".xlsx" disabled={!xlsxLoaded||importing==="customers"} style={{ display:"none" }}
-                    onChange={async (e) => {
-                      const file = e.target.files[0];
-                      if (!file || !window.XLSX) return;
-                      setImporting("customers");
-                      const session = JSON.parse(localStorage.getItem("wf_session")||"null");
-                      const token = session?.access_token;
-                      const reader = new FileReader();
-                      reader.onload = async (ev) => {
-                        try {
-                          const wb2 = window.XLSX.read(ev.target.result, { type:"array" });
-                          const ws2 = wb2.Sheets["ลูกค้า"] || wb2.Sheets[wb2.SheetNames[0]];
-                          const rows = window.XLSX.utils.sheet_to_json(ws2, { defval:"" });
-                          let inserted = 0, skipped = 0;
-                          for (const row of rows) {
-                            const ac = String(row["account_code**"]||row["account_code"]||"").trim();
-                            const nm = String(row["customer_name**"]||row["customer_name"]||"").trim();
-                            if (!ac || !nm) { skipped++; continue; }
-                            // Helper: ถ้าค่าเหมือน placeholder ให้ใช้ "" แทน
-                            const cleanVal = (v, placeholders=[]) => {
-                              const s = String(v||"").trim();
-                              return placeholders.includes(s) ? "" : s;
-                            };
-                            const payload = {
-                              account_code: ac, customer_name: nm,
-                              account_parent: cleanVal(row["account_parent"], ["เช่น CZ0108, DHL"]) || "CZ0108",
-                              status: cleanVal(row["status"], ["active","inactive"]) || "active",
-                              phone: cleanVal(row["phone"], ["เบอร์โทรผู้ติดต่อ","0628269514"]),
-                              email: cleanVal(row["email"], ["อีเมลผู้ติดต่อ","email@company.com"]),
-                              address: String(row["address"]||"").trim(),
-                              business_type: String(row["business_type"]||"").trim(),
-                              product_type: String(row["product_type"]||"").trim(),
-                              sales_owner: String(row["sales_owner"]||"").trim(),
-                              customer_category: String(row["customer_category"]||"").trim(),
-                              payment_type: String(row["payment_type"]||"cash").trim(),
-                              billing_cycle: String(row["billing_cycle"]||"").trim(),
-                              cod_percent: parseFloat(row["cod_percent**"]||row["cod_percent"]||2)||2,
-                              tax_id: String(row["tax_id"]||"").trim(),
-                              invoice_name: String(row["invoice_name"]||"").trim(),
-                              bank_name: String(row["bank_name"]||"").trim(),
-                              bank_account: String(row["bank_account"]||"").trim(),
-                              bank_account_name: String(row["bank_account_name"]||"").trim(),
-                              line_group_id: String(row["line_group_id"]||"").trim(),
-                              notes: String(row["notes"]||"").trim(),
-                            };
-                            const res = await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?on_conflict=account_code`, {
-                              method:"POST",
-                              headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates,return=minimal" },
-                              body: JSON.stringify(payload),
-                            });
-                            if (res.ok||res.status===201||res.status===200||res.status===204) inserted++; else { skipped++; }
-                          }
-                          alert(`✅ Import ${inserted} ลูกค้า${skipped>0?" | ข้าม "+skipped+" rows":""}`);
-                          loadCustomers();
-                        } catch(err) { alert("Error: "+err.message); }
-                        setImporting(null); e.target.value = "";
-                      };
-                      reader.readAsArrayBuffer(file);
-                    }}/>
-                </label>
-                <button onClick={()=>setShowAddForm(false)} style={{ ...css.btnPrimary, width:"auto", padding:"6px 14px", fontSize:12, background:colors.border, color:colors.text }}>ยกเลิก</button>
-              </div>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-              {FORM_FIELDS.map(f => (
-                <div key={f.key} style={{ gridColumn: f.half ? "auto" : "1/-1" }}>
-                  <label style={css.label}>{f.label}</label>
-                  {f.key==="payment_type" ? (
-                    <select style={css.input} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})}>
-                      <option value="cash">เงินสด</option><option value="credit">เครดิต</option>
-                    </select>
-                  ) : f.key==="status" ? (
-                    <select style={css.input} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})}>
-                      <option value="active">ใช้งาน</option><option value="inactive">ปิด</option>
-                    </select>
-                  ) : (
-                    <input style={css.input} placeholder={f.placeholder} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})} />
-                  )}
-                </div>
-              ))}
-            </div>
-            <div style={{ marginTop:16 }}>
-              <button onClick={handleSave} style={{ ...css.btnPrimary, width:"auto", padding:"10px 24px", fontSize:13 }}>บันทึก</button>
-            </div>
-          </div>
-        )}
-
-        {/* Customer detail */}
-        {selected && (
-          <div>
-            {/* Header */}
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16 }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
               <div>
-                <div style={{ fontSize:20, fontWeight:700, color:colors.primary }}>{selected.account_code}</div>
-                <div style={{ fontSize:14, color:colors.text, marginTop:2 }}>{selected.customer_name}</div>
-                <div style={{ fontSize:12, color:colors.textMuted }}>{selected.phone} {selected.email ? `• ${selected.email}` : ""}</div>
+                <div style={{fontSize:20,fontWeight:700,color:colors.primary}}>{selected.account_code}</div>
+                <div style={{fontSize:13,color:colors.text}}>{selected.customer_name}</div>
               </div>
-              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                <label style={{ padding:"7px 16px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.primary}`, background:"transparent", color:colors.primary, cursor: xlsxLoaded ? "pointer" : "default", fontFamily:font, fontWeight:500 }}>
-                  {importing ? "กำลัง Import..." : "Import ราคาขาย (.xlsx)"}
-                  <input type="file" accept=".xlsx" onChange={handleImportPricing} disabled={!xlsxLoaded||importing} style={{ display:"none" }} />
+              <div style={{display:"flex",gap:8}}>
+                <label style={{padding:"7px 14px",fontSize:12,borderRadius:8,border:`1.5px solid ${colors.primary}`,color:colors.primary,cursor:xlsxLoaded?"pointer":"default",fontFamily:font,fontWeight:500}}>
+                  {importing?"กำลัง Import...":"📥 Import (.xlsx)"}
+                  <input type="file" accept=".xlsx" onChange={handleImportPricing} disabled={!xlsxLoaded||importing} style={{display:"none"}}/>
                 </label>
                 <button onClick={downloadTemplate} disabled={!xlsxLoaded}
-                  style={{ padding:"7px 16px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.primary}`, background:"transparent", color:colors.primary, cursor:"pointer", fontFamily:font, fontWeight:500 }}>
-                  ดาวน์โหลด Template
+                  style={{padding:"7px 14px",fontSize:12,borderRadius:8,border:`1.5px solid ${colors.primary}`,color:colors.primary,background:"transparent",cursor:"pointer",fontFamily:font,fontWeight:500}}>
+                  📤 Download Template
                 </button>
               </div>
             </div>
 
-            {importResult && (
-              <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:12,
-                background: importResult.error ? colors.dangerLight : colors.primaryLight,
-                color: importResult.error ? colors.danger : colors.primary, fontSize:13 }}>
-                {importResult.error ? `❌ ${importResult.error}` : `✅ Import สำเร็จ ${importResult.success} rates`}
-              </div>
-            )}
+            {importResult&&<div style={{padding:"10px 14px",borderRadius:8,marginBottom:12,background:importResult.error?colors.dangerLight:colors.primaryLight,color:importResult.error?colors.danger:colors.primary,fontSize:13}}>
+              {importResult.error?`❌ ${importResult.error}`:`✅ Import สำเร็จ ${importResult.success} rates`}
+            </div>}
 
             {/* Tabs */}
-            <div style={{ display:"flex", gap:4, marginBottom:16, borderBottom:`1px solid ${colors.border}`, paddingBottom:0 }}>
-              {[
-                { key:"info", label:"ข้อมูลลูกค้า" },
-                { key:"flash", label:"ราคาขาย Flash" },
-                { key:"dhl", label:"ราคาขาย DHL" },
-                { key:"surcharge", label:"Surcharge" },
-                { key:"sender", label:"Sender Mapping" },
-              ].map(t => (
+            <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:`1px solid ${colors.border}`}}>
+              {[{key:"flash",label:"ราคาขาย Flash"},{key:"dhl",label:"ราคาขาย DHL"},{key:"surcharge",label:"Surcharge"},{key:"sender",label:"Sender Mapping"}].map(t=>(
                 <button key={t.key} onClick={()=>setTab(t.key)}
-                  style={{ padding:"8px 16px", fontSize:13, border:"none", cursor:"pointer", fontFamily:font, fontWeight:500,
-                    background: tab===t.key ? colors.primary : "transparent",
-                    color: tab===t.key ? "#fff" : colors.textMuted,
-                    borderRadius:"8px 8px 0 0", borderBottom: tab===t.key ? "none" : "transparent" }}>
+                  style={{padding:"8px 16px",fontSize:13,border:"none",cursor:"pointer",fontFamily:font,fontWeight:500,borderRadius:"8px 8px 0 0",
+                    background:tab===t.key?colors.primary:"transparent",color:tab===t.key?"#fff":colors.textMuted}}>
                   {t.label}
                 </button>
               ))}
             </div>
 
-            {/* Tab: ข้อมูลลูกค้า */}
-            {tab==="info" && (
-              <div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                  {FORM_FIELDS.map(f => (
-                    <div key={f.key} style={{ gridColumn: f.half ? "auto" : "1/-1" }}>
-                      <label style={css.label}>{f.label}</label>
-                      {f.key==="payment_type" ? (
-                        <select style={css.input} value={selected[f.key]||""} onChange={e=>setSelected({...selected,[f.key]:e.target.value})}>
-                          <option value="cash">เงินสด</option><option value="credit">เครดิต</option>
-                        </select>
-                      ) : f.key==="status" ? (
-                        <select style={css.input} value={selected[f.key]||"active"} onChange={e=>setSelected({...selected,[f.key]:e.target.value})}>
-                          <option value="active">ใช้งาน</option><option value="inactive">ปิด</option>
-                        </select>
-                      ) : (
-                        <input style={css.input} placeholder={f.placeholder} value={selected[f.key]||""} onChange={e=>setSelected({...selected,[f.key]:e.target.value})} />
-                      )}
+            {loadingPricing?<div style={{textAlign:"center",color:colors.textMuted,padding:24}}>กำลังโหลด...</div>:(
+              <>
+                {tab==="flash"&&(
+                  <div>
+                    <div style={{display:"flex",gap:6,marginBottom:14,alignItems:"center"}}>
+                      <span style={{fontSize:12,color:colors.textMuted,marginRight:4}}>ประเภทบริการ:</span>
+                      {[{key:"STD",label:"มาตรฐาน",color:"#1a6b4f"},{key:"BULKY",label:"พัสดุขนาดใหญ่",color:"#e8913a"},{key:"FRUIT",label:"ผลไม้",color:"#8e44ad"}].map(({key,label,color})=>{
+                        const hasData=pricingTables.some(t=>t.carrier_code==="FLASH"&&(t.service_type||"STD")===key);
+                        const isActive=flashServiceType===key;
+                        return(
+                          <button key={key} onClick={()=>setFlashServiceType(key)}
+                            style={{padding:"6px 14px",fontSize:12,borderRadius:6,border:`1.5px solid ${isActive?color:colors.border}`,
+                              background:isActive?color:"transparent",color:isActive?"#fff":hasData?color:colors.textLight,cursor:"pointer",fontFamily:font,fontWeight:500,position:"relative"}}>
+                            {label}
+                            {hasData&&!isActive&&<span style={{position:"absolute",top:-4,right:-4,width:8,height:8,borderRadius:"50%",background:color,border:"1.5px solid white"}}/>}
+                          </button>
+                        );
+                      })}
+                      <span style={{fontSize:11,color:colors.textLight,marginLeft:4}}>
+                        {pricingTables.some(t=>t.carrier_code==="FLASH"&&(t.service_type||"STD")===flashServiceType)?"✓ มีราคา — คลิกตัวเลขแก้ไข":"ยังไม่มีราคา — คลิกเพื่อเพิ่ม"}
+                      </span>
                     </div>
-                  ))}
-                </div>
-                <div style={{ marginTop:16 }}>
-                  <button onClick={async()=>{
-                    try { await supabase.from("wf_customers").update(selected, {id:selected.id}); alert("บันทึกสำเร็จ"); loadCustomers(); }
-                    catch(e) { alert("Error: "+e.message); }
-                  }} style={{ ...css.btnPrimary, width:"auto", padding:"10px 24px", fontSize:13 }}>บันทึก</button>
-                </div>
-              </div>
-            )}
-
-            {/* Tab: Flash pricing */}
-            {tab==="flash" && (
-              <div>
-                {loadingPricing ? <div style={{ textAlign:"center", color:colors.textMuted, padding:24 }}>กำลังโหลด...</div> :
-                  <PricingTable carrier="FLASH" zones={["BKK","UPC"]} />
-                }
-              </div>
-            )}
-
-            {/* Tab: DHL pricing */}
-            {tab==="dhl" && (
-              <div>
-                {loadingPricing ? <div style={{ textAlign:"center", color:colors.textMuted, padding:24 }}>กำลังโหลด...</div> :
-                  <PricingTable carrier="DHL" zones={["BKK","UPC_CE","UPC_NNS"]} />
-                }
-              </div>
-            )}
-
-            {/* Tab: Surcharge overrides */}
-            {tab==="surcharge" && (
-              <div>
-                <div style={{ marginBottom:12, fontSize:13, color:colors.textMuted }}>
-                  ราคา surcharge เฉพาะลูกค้านี้ — ถ้าไม่กำหนด ใช้ราคา default จาก carrier
-                </div>
-                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                  <thead>
-                    <tr style={{ background:colors.bg }}>
-                      {["Carrier","Surcharge","ชื่อ","ราคาขาย (บาท)","เก็บไหม"].map(h => (
-                        <th key={h} style={{ padding:"6px 10px", border:`1px solid ${colors.border}`, fontWeight:600, fontSize:11, color:colors.textMuted, textAlign:"left" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {carrierSurcharges.map(cs => {
-                      const ov = surchargeOverrides.find(o => o.carrier_code===cs.carrier_code && o.surcharge_code===cs.surcharge_code);
-                      return (
-                        <tr key={`${cs.carrier_code}-${cs.surcharge_code}`}>
-                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}` }}>
-                            <Badge type={cs.carrier_code==="FLASH"?"warning":"info"}>{cs.carrier_code}</Badge>
-                          </td>
-                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}`, fontSize:11, color:colors.textMuted }}>{cs.surcharge_code}</td>
-                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}` }}>{cs.surcharge_name}</td>
-                          <td style={{ padding:"4px 6px", border:`1px solid ${colors.borderLight}` }}>
-                            <input type="number" defaultValue={ov?.sell_price ?? cs.default_sell}
-                              style={{ width:70, padding:"3px 6px", fontSize:11, border:`1px solid ${colors.border}`, borderRadius:4, textAlign:"right", fontFamily:font }}
+                    <PricingGrid carrier="FLASH" zones={["BKK","UPC"]} serviceType={flashServiceType}/>
+                  </div>
+                )}
+                {tab==="dhl"&&<PricingGrid carrier="DHL" zones={["BKK","UPC_CE","UPC_NNS"]}/>}
+                {tab==="surcharge"&&(
+                  <div>
+                    <div style={{marginBottom:10,fontSize:13,color:colors.textMuted}}>กำหนดราคา surcharge เฉพาะลูกค้านี้ — ถ้าไม่กำหนด ใช้ค่า default</div>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead><tr style={{background:colors.bg}}>
+                        {["Carrier","Surcharge","ชื่อ","VAT","ราคาขาย","เก็บไหม"].map(h=>(
+                          <th key={h} style={{padding:"6px 10px",border:`1px solid ${colors.border}`,fontWeight:600,fontSize:11,color:colors.textMuted,textAlign:"left"}}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>{carrierSurcharges.map(cs=>{
+                        const ov=surchargeOverrides.find(o=>o.carrier_code===cs.carrier_code&&o.surcharge_code===cs.surcharge_code);
+                        return <tr key={`${cs.carrier_code}-${cs.surcharge_code}`}>
+                          <td style={{padding:"5px 8px",border:`1px solid ${colors.borderLight}`}}><Badge type={cs.carrier_code==="FLASH"?"warning":"info"}>{cs.carrier_code}</Badge></td>
+                          <td style={{padding:"5px 8px",border:`1px solid ${colors.borderLight}`,fontSize:10,color:colors.textMuted}}>{cs.surcharge_code}</td>
+                          <td style={{padding:"5px 8px",border:`1px solid ${colors.borderLight}`}}>{cs.surcharge_name}</td>
+                          <td style={{padding:"5px 8px",border:`1px solid ${colors.borderLight}`,textAlign:"center"}}>{cs.has_vat?<Badge type="warning">มี VAT</Badge>:<span style={{color:colors.textLight,fontSize:10}}>ไม่มี</span>}</td>
+                          <td style={{padding:"3px 5px",border:`1px solid ${colors.borderLight}`}}>
+                            <input type="number" defaultValue={ov?.sell_price??cs.default_sell}
+                              style={{width:65,padding:"3px 5px",fontSize:11,border:`1px solid ${colors.border}`,borderRadius:4,textAlign:"right",fontFamily:font}}
                               onBlur={async e=>{
                                 const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-                                const payload={ customer_id:selected.id, account_code:selected.account_code, carrier_code:cs.carrier_code, surcharge_code:cs.surcharge_code, sell_price:parseFloat(e.target.value)||0, is_enabled: ov?.is_enabled??true };
-                                await fetch(`${SUPABASE_URL}/rest/v1/customer_surcharge_overrides`, { method:"POST", headers:{...supabaseHeaders(token),Prefer:"resolution=merge-duplicates"}, body:JSON.stringify(payload) });
-                                await loadCustomerPricing(selected.id, selected.account_code);
-                              }}
-                              onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
-                            />
+                                await fetch(`${SUPABASE_URL}/rest/v1/customer_surcharge_overrides`,{method:"POST",headers:{...supabaseHeaders(token),Prefer:"resolution=merge-duplicates"},body:JSON.stringify({customer_id:selected.id,account_code:selected.account_code,carrier_code:cs.carrier_code,surcharge_code:cs.surcharge_code,sell_price:parseFloat(e.target.value)||0,is_enabled:ov?.is_enabled??true})});
+                              }} onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}/>
                           </td>
-                          <td style={{ padding:"6px 10px", border:`1px solid ${colors.borderLight}`, textAlign:"center" }}>
+                          <td style={{padding:"5px 8px",border:`1px solid ${colors.borderLight}`,textAlign:"center"}}>
                             <input type="checkbox" defaultChecked={ov?.is_enabled??true}
                               onChange={async e=>{
                                 const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-                                const payload={ customer_id:selected.id, account_code:selected.account_code, carrier_code:cs.carrier_code, surcharge_code:cs.surcharge_code, sell_price:ov?.sell_price??cs.default_sell, is_enabled:e.target.checked };
-                                await fetch(`${SUPABASE_URL}/rest/v1/customer_surcharge_overrides`, { method:"POST", headers:{...supabaseHeaders(token),Prefer:"resolution=merge-duplicates"}, body:JSON.stringify(payload) });
-                              }}
-                            />
+                                await fetch(`${SUPABASE_URL}/rest/v1/customer_surcharge_overrides`,{method:"POST",headers:{...supabaseHeaders(token),Prefer:"resolution=merge-duplicates"},body:JSON.stringify({customer_id:selected.id,account_code:selected.account_code,carrier_code:cs.carrier_code,surcharge_code:cs.surcharge_code,sell_price:ov?.sell_price??cs.default_sell,is_enabled:e.target.checked})});
+                              }}/>
                           </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* Tab: Sender mapping */}
-            {tab==="sender" && (
-              <div>
-                <div style={{ marginBottom:12, fontSize:13, color:colors.textMuted }}>
-                  ชื่อผู้ส่ง (Sender) ที่ใช้ mapping กลับมาเป็น account นี้ในไฟล์ KA
-                </div>
-                {senderMappings.map(m => (
-                  <div key={m.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
-                    <input style={{ ...css.input, flex:1 }} defaultValue={m.sender_name}
-                      onBlur={async e=>{
-                        const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-                        await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping?id=eq.${m.id}`, { method:"PATCH", headers:supabaseHeaders(token), body:JSON.stringify({sender_name:e.target.value}) });
-                      }} />
-                    <Badge type="info">{m.carrier_code}</Badge>
-                    <span onClick={async()=>{
-                      const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-                      await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping?id=eq.${m.id}`, { method:"DELETE", headers:supabaseHeaders(token) });
-                      setSenderMappings(prev=>prev.filter(x=>x.id!==m.id));
-                    }} style={{ color:colors.danger, cursor:"pointer", fontSize:12 }}>ลบ</span>
+                        </tr>;
+                      })}</tbody>
+                    </table>
                   </div>
-                ))}
-                <button onClick={async()=>{
-                  const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-                  const res=await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping`, { method:"POST", headers:{...supabaseHeaders(token),Prefer:"return=representation"}, body:JSON.stringify({ customer_id:selected.id, account_code:selected.account_code, sender_name:"", carrier_code:"FLASH", is_active:true }) });
-                  const data=await res.json();
-                  if(Array.isArray(data)&&data[0]) setSenderMappings(prev=>[...prev,data[0]]);
-                }} style={{ ...css.btnPrimary, width:"auto", padding:"7px 16px", fontSize:12 }}>+ เพิ่ม Sender</button>
-              </div>
+                )}
+                {tab==="sender"&&(
+                  <div>
+                    <div style={{marginBottom:10,fontSize:13,color:colors.textMuted}}>ชื่อผู้ส่ง (Sender) ในไฟล์ KA ที่ mapping มาเป็น account นี้</div>
+                    {senderMappings.map(m=>(
+                      <div key={m.id} style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                        <input style={{...css.input,flex:1}} defaultValue={m.sender_name}
+                          onBlur={async e=>{const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token; await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping?id=eq.${m.id}`,{method:"PATCH",headers:supabaseHeaders(token),body:JSON.stringify({sender_name:e.target.value})});}}/>
+                        <Badge type="info">{m.carrier_code}</Badge>
+                        <span onClick={async()=>{const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token; await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping?id=eq.${m.id}`,{method:"DELETE",headers:supabaseHeaders(token)}); setSenderMappings(prev=>prev.filter(x=>x.id!==m.id));}} style={{color:colors.danger,cursor:"pointer",fontSize:12}}>ลบ</span>
+                      </div>
+                    ))}
+                    <button onClick={async()=>{
+                      const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
+                      const res=await fetch(`${SUPABASE_URL}/rest/v1/customer_sender_mapping`,{method:"POST",headers:{...supabaseHeaders(token),Prefer:"return=representation"},body:JSON.stringify({customer_id:selected.id,account_code:selected.account_code,sender_name:"",carrier_code:"FLASH",is_active:true})});
+                      const data=await res.json(); if(Array.isArray(data)&&data[0]) setSenderMappings(prev=>[...prev,data[0]]);
+                    }} style={{...css.btnPrimary,width:"auto",padding:"7px 16px",fontSize:12}}>+ เพิ่ม Sender</button>
+                  </div>
+                )}
+              </>
             )}
-          </div>
-        )}
-
-        {!selected && !showAddForm && (
-          <div style={{ textAlign:"center", padding:"60px 20px", color:colors.textLight }}>
-            <div style={{ fontSize:40, marginBottom:12 }}>◎</div>
-            <div style={{ fontSize:14 }}>เลือกลูกค้าจากรายการด้านซ้าย หรือกด + เพิ่มลูกค้าใหม่</div>
           </div>
         )}
       </div>
@@ -3102,7 +2926,7 @@ function SellPricingPage() {
   const [searchInput, setSearchInput] = useState("");
   const [selected, setSelected] = useState(null);
   const [tab, setTab] = useState("flash");
-  const [flashServiceType, setFlashServiceType] = useState("STD"); // STD, BULKY, FRUIT
+  const [flashServiceType, setFlashServiceType] = useState("STD");
   const [pricingTables, setPricingTables] = useState([]);
   const [pricingRates, setPricingRates] = useState({});
   const [surchargeOverrides, setSurchargeOverrides] = useState([]);
@@ -3194,12 +3018,9 @@ function SellPricingPage() {
             const zoneKey = Object.keys(row).find(k => k.includes("zone"));
             const zone = zoneKey ? String(row[zoneKey]).trim() : "";
             if (!zone || !zones.includes(zone)) continue;
-            // อ่าน service_type จาก column (default STD สำหรับ Flash)
-            const svcKey = Object.keys(row).find(k => k.includes("service_type"));
-            const serviceType = (carrierCode==="FLASH" && svcKey) ? String(row[svcKey]).trim().toUpperCase() : "STD";
             const tRes = await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_tables`, {
               method:"POST", headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates,return=representation" },
-              body: JSON.stringify({ customer_id:selected.id, account_code:selected.account_code, carrier_code:carrierCode, service_type:serviceType, zone, is_active:true }),
+              body: JSON.stringify({ customer_id:selected.id, account_code:selected.account_code, carrier_code:carrierCode, zone, is_active:true }),
             });
             const tData = await tRes.json();
             const tableId = Array.isArray(tData) ? tData[0]?.id : tData?.id;
@@ -3247,15 +3068,15 @@ function SellPricingPage() {
     window.XLSX.writeFile(wb, `${selected.account_code}_pricing.xlsx`);
   };
 
-  const PricingGrid = ({ carrier, zones, serviceType = "STD" }) => {
+  const PricingGrid = ({ carrier, zones }) => {
     const [editCell, setEditCell] = useState(null);
     const maxKg = carrier==="FLASH" ? 50 : 30;
     const getRate = (tid, kg) => (pricingRates[tid]||[]).find(r=>r.weight_kg===kg)?.sell_price||0;
     const ensureTable = async (zone) => {
-      const existing = pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone&&(t.service_type||"STD")===serviceType);
+      const existing = pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone);
       if (existing) return existing.id;
       const session=JSON.parse(localStorage.getItem("wf_session")||"null"); const token=session?.access_token;
-      const res=await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_tables`,{method:"POST",headers:{...supabaseHeaders(token),Prefer:"return=representation"},body:JSON.stringify({customer_id:selected.id,account_code:selected.account_code,carrier_code:carrier,service_type:serviceType,zone,is_active:true})});
+      const res=await fetch(`${SUPABASE_URL}/rest/v1/customer_pricing_tables`,{method:"POST",headers:{...supabaseHeaders(token),Prefer:"return=representation"},body:JSON.stringify({customer_id:selected.id,account_code:selected.account_code,carrier_code:carrier,zone,is_active:true})});
       const data=await res.json(); const t=Array.isArray(data)?data[0]:data;
       if(t?.id){setPricingTables(prev=>[...prev,t]);setPricingRates(prev=>({...prev,[t.id]:[]}));return t.id;}
       return null;
@@ -3283,7 +3104,7 @@ function SellPricingPage() {
             <tr key={kg} style={{background:kg%2===0?"#fafafa":"white"}}>
               <td style={{padding:"2px 8px",border:`1px solid ${colors.borderLight}`,fontWeight:600,textAlign:"center",fontSize:11}}>{kg}</td>
               {zones.map(zone=>{
-                const t=pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone&&(t.service_type||"STD")===serviceType);
+                const t=pricingTables.find(t=>t.carrier_code===carrier&&t.zone===zone);
                 const val=t?getRate(t.id,kg):0; const ck=`${carrier}-${zone}-${kg}`;
                 return <td key={zone} style={{padding:"1px 2px",border:`1px solid ${colors.borderLight}`}}>
                   {editCell===ck?(
@@ -3378,40 +3199,7 @@ function SellPricingPage() {
 
             {loadingPricing?<div style={{textAlign:"center",color:colors.textMuted,padding:24}}>กำลังโหลด...</div>:(
               <>
-                {tab==="flash"&&(
-                  <div>
-                    {/* Service type selector — แสดงเสมอ 3 ประเภท */}
-                    <div style={{display:"flex",gap:6,marginBottom:14,alignItems:"center"}}>
-                      <span style={{fontSize:12,color:colors.textMuted,marginRight:4}}>ประเภทบริการ:</span>
-                      {[
-                        {key:"STD",   label:"มาตรฐาน",         color:"#1a6b4f"},
-                        {key:"BULKY", label:"พัสดุขนาดใหญ่",   color:"#e8913a"},
-                        {key:"FRUIT", label:"ผลไม้",            color:"#8e44ad"},
-                      ].map(({key,label,color})=>{
-                        const hasData = pricingTables.some(t=>t.carrier_code==="FLASH"&&(t.service_type||"STD")===key);
-                        const isActive = flashServiceType===key;
-                        return (
-                          <button key={key} onClick={()=>setFlashServiceType(key)}
-                            style={{padding:"6px 14px",fontSize:12,borderRadius:6,
-                              border:`1.5px solid ${isActive?color:colors.border}`,
-                              background:isActive?color:"transparent",
-                              color:isActive?"#fff":hasData?color:colors.textLight,
-                              cursor:"pointer",fontFamily:font,fontWeight:500,
-                              position:"relative"}}>
-                            {label}
-                            {hasData&&!isActive&&<span style={{position:"absolute",top:-4,right:-4,width:8,height:8,borderRadius:"50%",background:color,border:"1.5px solid white"}}/>}
-                          </button>
-                        );
-                      })}
-                      <span style={{fontSize:11,color:colors.textLight,marginLeft:4}}>
-                        {pricingTables.some(t=>t.carrier_code==="FLASH"&&(t.service_type||"STD")===flashServiceType)
-                          ? "✓ มีราคาอยู่แล้ว — คลิกตัวเลขเพื่อแก้ไข"
-                          : "ยังไม่มีราคา — คลิกตัวเลขเพื่อเพิ่มได้เลย"}
-                      </span>
-                    </div>
-                    <PricingGrid carrier="FLASH" zones={["BKK","UPC"]} serviceType={flashServiceType}/>
-                  </div>
-                )}
+                {tab==="flash"&&<PricingGrid carrier="FLASH" zones={["BKK","UPC"]}/>}
                 {tab==="dhl"&&<PricingGrid carrier="DHL" zones={["BKK","UPC_CE","UPC_NNS"]}/>}
                 {tab==="surcharge"&&(
                   <div>
@@ -3473,6 +3261,36 @@ function SellPricingPage() {
         )}
       </div>
     </div>
+    {/* Delete Confirm Modal */}
+    {showDeleteModal&&(
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:"#fff",borderRadius:16,padding:28,maxWidth:380,width:"90%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)",fontFamily:font}}>
+          <div style={{fontSize:32,textAlign:"center",marginBottom:8}}>🗑</div>
+          <div style={{fontSize:17,fontWeight:700,textAlign:"center",marginBottom:8}}>ยืนยันการลบ</div>
+          <div style={{fontSize:14,color:colors.textMuted,textAlign:"center",marginBottom:8}}>
+            ต้องการลบ <b style={{color:colors.danger}}>{checkedIds.size} ลูกค้า</b> ที่เลือกใช่ไหม?
+          </div>
+          <div style={{fontSize:12,color:colors.danger,background:colors.dangerLight,padding:"8px 12px",borderRadius:8,marginBottom:20,textAlign:"center"}}>
+            ⚠️ ข้อมูลราคาขาย, Surcharge Override และ Sender Mapping จะถูกลบด้วย
+          </div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>setShowDeleteModal(false)} disabled={deleting}
+              style={{flex:1,padding:"11px 0",borderRadius:8,border:`1.5px solid ${colors.border}`,background:"transparent",color:colors.text,cursor:"pointer",fontFamily:font,fontSize:14}}>
+              ยกเลิก
+            </button>
+            <button disabled={deleting} onClick={async()=>{
+              setDeleting(true);
+              const session=JSON.parse(localStorage.getItem("wf_session")||"null");const token=session?.access_token;
+              for(const id of checkedIds){await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?id=eq.${id}`,{method:"DELETE",headers:supabaseHeaders(token)});}
+              if(selected&&checkedIds.has(selected.id))setSelected(null);
+              setCheckedIds(new Set());setShowDeleteModal(false);setDeleting(false);loadCustomers();
+            }} style={{flex:1,padding:"11px 0",borderRadius:8,border:"none",background:colors.danger,color:"#fff",cursor:"pointer",fontFamily:font,fontSize:14,fontWeight:700}}>
+              {deleting?"⏳ กำลังลบ...":`🗑 ลบ ${checkedIds.size} รายการ`}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
   );
 }
 
