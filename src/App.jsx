@@ -610,13 +610,10 @@ function CustomerDetail({ customer, onSaved }) {
       {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:20 }}>
         <div>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
-            <h2 style={{ fontSize:22, fontWeight:700, color:C.ink, letterSpacing:"-0.5px", margin:0 }}>
-              {customer.account_code}
-            </h2>
-            <StatusChip status={customer.status} />
-          </div>
-          <div style={{ fontSize:13, color:C.inkMid }}>{customer.customer_name}</div>
+          <h2 style={{ fontSize:22, fontWeight:700, color:C.ink, letterSpacing:"-0.5px", margin:0 }}>
+            {customer.account_code}
+          </h2>
+          <div style={{ fontSize:13, color:C.inkMid, marginTop:2 }}>{customer.customer_name}</div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
           <label style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"8px 16px",
