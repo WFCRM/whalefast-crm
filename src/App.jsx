@@ -2623,10 +2623,105 @@ function WFCustomersPage() {
 
       {/* RIGHT: Pricing panel */}
       <div style={{flex:1,overflowY:"auto",padding:"20px 24px"}}>
-        {!selected&&<div style={{textAlign:"center",padding:"60px 20px",color:colors.textLight}}>
+        {!selected&&!showAddForm&&<div style={{textAlign:"center",padding:"60px 20px",color:colors.textLight}}>
           <div style={{fontSize:40,marginBottom:12}}>◑</div>
-          <div style={{fontSize:14}}>เลือกลูกค้าจากรายการซ้ายเพื่อดู/แก้ไขราคาขาย</div>
+          <div style={{fontSize:14}}>เลือกลูกค้าจากรายการซ้าย หรือกด + เพิ่มลูกค้าใหม่</div>
         </div>}
+        {showAddForm && !selected && (
+          <div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:8 }}>
+              <h3 style={{ fontSize:18, fontWeight:700 }}>เพิ่มลูกค้าใหม่</h3>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+                <button onClick={downloadTemplate} disabled={!xlsxLoaded}
+                  style={{ padding:"7px 14px", fontSize:12, borderRadius:8, border:`1.5px solid ${colors.primary}`, background:"transparent", color:colors.primary, cursor:"pointer", fontFamily:font, fontWeight:500 }}>
+                  📥 Download Template
+                </button>
+                <label style={{ padding:"7px 14px", fontSize:12, borderRadius:8, border:"1.5px solid #2196f3", background:"transparent", color:"#2196f3", cursor:xlsxLoaded?"pointer":"default", fontFamily:font, fontWeight:500 }}>
+                  {importing==="customers"?"กำลัง Import...":"📤 Import จาก Excel"}
+                  <input type="file" accept=".xlsx" disabled={!xlsxLoaded||importing==="customers"} style={{ display:"none" }}
+                    onChange={async (e) => {
+                      const file = e.target.files[0];
+                      if (!file || !window.XLSX) return;
+                      setImporting("customers");
+                      const session = JSON.parse(localStorage.getItem("wf_session")||"null");
+                      const token = session?.access_token;
+                      const reader = new FileReader();
+                      reader.onload = async (ev) => {
+                        try {
+                          const wb2 = window.XLSX.read(ev.target.result, { type:"array" });
+                          const ws2 = wb2.Sheets["ลูกค้า"] || wb2.Sheets[wb2.SheetNames[0]];
+                          const rows = window.XLSX.utils.sheet_to_json(ws2, { defval:"" });
+                          let inserted = 0, skipped = 0;
+                          for (const row of rows) {
+                            const ac = String(row["account_code**"]||row["account_code"]||"").trim();
+                            const nm = String(row["customer_name**"]||row["customer_name"]||"").trim();
+                            if (!ac || !nm) { skipped++; continue; }
+                            const payload = {
+                              account_code: ac, customer_name: nm,
+                              account_parent: String(row["account_parent"]||"CZ0108").trim(),
+                              status: String(row["status"]||"active").trim(),
+                              phone: String(row["phone"]||"").trim(),
+                              email: String(row["email"]||"").trim(),
+                              business_type: String(row["business_type"]||"").trim(),
+                              sales_owner: String(row["sales_owner"]||"").trim(),
+                              customer_category: String(row["customer_category"]||"").trim(),
+                              billing_cycle: String(row["billing_cycle"]||"").trim(),
+                              cod_percent: parseFloat(row["cod_percent**"]||row["cod_percent"]||2)||2,
+                              tax_id: String(row["tax_id"]||"").trim(),
+                              invoice_name: String(row["invoice_name"]||"").trim(),
+                              bank_name: String(row["bank_name"]||"").trim(),
+                              bank_account: String(row["bank_account"]||"").trim(),
+                              bank_account_name: String(row["bank_account_name"]||"").trim(),
+                              line_group_id: String(row["line_group_id"]||"").trim(),
+                              notes: String(row["notes"]||"").trim(),
+                            };
+                            const res = await fetch(`${SUPABASE_URL}/rest/v1/wf_customers?on_conflict=account_code`, {
+                              method:"POST",
+                              headers:{ ...supabaseHeaders(token), Prefer:"resolution=merge-duplicates,return=minimal" },
+                              body: JSON.stringify(payload),
+                            });
+                            if (res.ok||res.status===201||res.status===200||res.status===204) inserted++; else skipped++;
+                          }
+                          alert(`✅ Import ${inserted} ลูกค้า${skipped>0?" | ข้าม "+skipped+" rows":""}`);
+                          loadCustomers();
+                        } catch(err) { alert("Error: "+err.message); }
+                        setImporting(null); e.target.value = "";
+                      };
+                      reader.readAsArrayBuffer(file);
+                    }}/>
+                </label>
+                <button onClick={()=>setShowAddForm(false)} style={{ ...css.btnPrimary, width:"auto", padding:"6px 14px", fontSize:12, background:colors.border, color:colors.text }}>ยกเลิก</button>
+              </div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              {FORM_FIELDS.map(f => (
+                <div key={f.key} style={{ gridColumn: f.half ? "auto" : "1/-1" }}>
+                  <label style={css.label}>{f.label}</label>
+                  {f.key==="payment_type" ? (
+                    <select style={css.input} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})}>
+                      <option value="cash">เงินสด</option><option value="credit">เครดิต</option>
+                    </select>
+                  ) : f.key==="status" ? (
+                    <select style={css.input} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})}>
+                      <option value="active">✅ ใช้งาน (Active)</option>
+                      <option value="inactive">⏸ หยุดชั่วคราว (Inactive)</option>
+                      <option value="lost">❌ Lost</option>
+                      <option value="stop_trade">🚫 Stop Trade</option>
+                    </select>
+                  ) : (
+                    <input style={css.input} placeholder={f.placeholder} value={form[f.key]} onChange={e=>setForm({...form,[f.key]:e.target.value})} />
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop:16 }}>
+              <button onClick={handleSave} style={{ ...css.btnPrimary, width:"auto", padding:"10px 24px", fontSize:13 }}>บันทึก</button>
+            </div>
+          </div>
+        )}
+
+        {/* Customer detail */}
+        
         {selected&&(
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
