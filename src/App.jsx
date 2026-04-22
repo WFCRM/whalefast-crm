@@ -477,6 +477,7 @@ function CustomerDetail({ customer, onSaved }) {
   const [tab, setTab] = useState("info");
   const [form, setForm] = useState({ ...customer });
   const [saving, setSaving] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [pricingTables, setPricingTables] = useState([]);
   const [pricingRates, setPricingRates] = useState({});
   const [surcharges, setSurcharges] = useState([]);
@@ -525,7 +526,10 @@ function CustomerDetail({ customer, onSaved }) {
 
   useEffect(() => { loadPricing(); }, [loadPricing]);
 
-  const handleSave = async () => {
+  const handleSave = () => setShowConfirm(true);
+
+  const doSave = async () => {
+    setShowConfirm(false);
     setSaving(true);
     try {
       await sb.patch(`wf_customers?id=eq.${customer.id}`, {
@@ -785,6 +789,22 @@ function CustomerDetail({ customer, onSaved }) {
           </table>
         </div>
       )}
+
+      {/* Confirm Save Modal */}
+      <Modal open={showConfirm} onClose={() => setShowConfirm(false)} title="" width={380}>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>💾</div>
+          <h3 style={{ fontSize:17, fontWeight:700, margin:"0 0 8px", color:C.ink }}>ยืนยันการบันทึก</h3>
+          <p style={{ color:C.inkMid, fontSize:14, margin:"0 0 20px" }}>
+            ต้องการบันทึกการเปลี่ยนแปลงข้อมูลของ<br/>
+            <strong style={{ color:C.ink }}>{customer.account_code}</strong> ใช่ไหม?
+          </p>
+          <div style={{ display:"flex", gap:10 }}>
+            <Btn variant="ghost" onClick={() => setShowConfirm(false)} style={{ flex:1 }}>ยกเลิก</Btn>
+            <Btn onClick={doSave} style={{ flex:1 }}>✅ ยืนยัน บันทึก</Btn>
+          </div>
+        </div>
+      </Modal>
 
       {/* Sender Tab */}
       {tab === "sender" && (
