@@ -411,7 +411,7 @@ const menuItems = {
   ],
   sales: [
     { key: "dashboard", label: "Dashboard", icon: "◈" },
-    { key: "customers", label: "ลูกค้า", icon: "◎" },
+    { key: "wf_customers", label: "ลูกค้า", icon: "◎" },
     { key: "leads", label: "Pipeline", icon: "◇" },
   ],
 };
