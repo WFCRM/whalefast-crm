@@ -3101,6 +3101,7 @@ function SellPricingPage() {
   const [xlsxLoaded, setXlsxLoaded] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const [flashServiceType, setFlashServiceType] = useState("STD");
 
   useEffect(() => { loadCustomers(); loadXlsx(); loadCarrierSurcharges(); }, []);
   useEffect(() => { loadCustomers(); }, [search]);
