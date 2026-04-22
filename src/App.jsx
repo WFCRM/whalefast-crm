@@ -495,6 +495,7 @@ function CustomerDetail({ customer, onSaved }) {
   const [senders, setSenders] = useState([]);
   const [loadingPricing, setLoadingPricing] = useState(false);
   const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
+  const rightPanelRef = useRef(null);
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState(null);
   const [flashType, setFlashType] = useState("STD");
@@ -504,6 +505,11 @@ function CustomerDetail({ customer, onSaved }) {
     originalData.current = { ...customer };
     setTab("info"); 
   }, [customer.id]);
+
+  // Scroll right panel to top when customer changes
+  useEffect(() => {
+    if (rightPanelRef.current) rightPanelRef.current.scrollTop = 0;
+  }, [selected?.id]);
 
   useEffect(() => {
     if (!window.XLSX) {
@@ -2250,25 +2256,7 @@ function SellPricingPage() {
   useEffect(() => { loadCustomers(); }, [search]);
 
   useEffect(() => {
-    if (!selected) return;
-    const custCarriers = Array.isArray(selected.carriers) && selected.carriers.length > 0
-      ? selected.carriers : null;
-    if (custCarriers) {
-      // Check if current carrier is valid for this customer
-      const carrierValid = carrier === "FLASH"
-        ? custCarriers.some(c => c.startsWith("FLASH"))
-        : custCarriers.includes(carrier);
-      if (!carrierValid) {
-        // Switch to first valid carrier
-        const firstCustCarrier = custCarriers[0];
-        const firstCarrierKey = firstCustCarrier.startsWith("FLASH") ? "FLASH" : firstCustCarrier;
-        const firstCfg = SELL_CARRIER_TABS.find(ct => ct.key === firstCarrierKey);
-        setCarrier(firstCarrierKey);
-        setSvcKey(firstCfg?.services[0]?.key || "STD");
-        return; // re-render will trigger this effect again with correct carrier
-      }
-    }
-    loadRates();
+    if (selected) loadRates();
   }, [selected?.id, carrier, svcKey]);
 
   const loadCustomers = async () => {
@@ -2305,9 +2293,10 @@ function SellPricingPage() {
 
   // Only show carriers that customer has enabled (or all if not set)
   const visibleCarrierTabs = SELL_CARRIER_TABS.filter(ct => {
-    if (!Array.isArray(selected?.carriers) || selected.carriers.length === 0) return true;
-    if (ct.key === "FLASH") return selected.carriers.some(c => c.startsWith("FLASH"));
-    return selected.carriers.includes(ct.key);
+    const crs = selected?.carriers;
+    if (!crs || !Array.isArray(crs) || crs.length === 0) return true; // no carriers set = show all
+    if (ct.key === "FLASH") return crs.some(k => String(k).startsWith("FLASH"));
+    return crs.map(String).includes(ct.key);
   });
   // currentCarrierCfg from visible tabs only - prevents Flash service tabs leaking
   const currentCarrierCfg = visibleCarrierTabs.find(c => c.key === carrier);
@@ -2349,10 +2338,18 @@ function SellPricingPage() {
             const isSel = selected?.id === c.id;
             return (
               <div key={c.id} onClick={() => {
+                // Compute correct carrier for this customer BEFORE setting state
+                const cCarriers = Array.isArray(c.carriers) && c.carriers.length > 0 ? c.carriers : null;
+                let initCarrier = "FLASH", initSvc = "STD";
+                if (cCarriers) {
+                  const firstCK = cCarriers[0];
+                  initCarrier = firstCK.startsWith("FLASH") ? "FLASH" : firstCK;
+                  const initCfg = SELL_CARRIER_TABS.find(ct => ct.key === initCarrier);
+                  initSvc = initCfg?.services[0]?.key || "STD";
+                }
                 setSelected(c);
-                // Always reset to FLASH/STD first, useEffect will auto-correct
-                setCarrier("FLASH");
-                setSvcKey("STD");
+                setCarrier(initCarrier);
+                setSvcKey(initSvc);
                 setDefaultRows([]);
                 setOverrides([]);
               }}
@@ -2379,8 +2376,7 @@ function SellPricingPage() {
       </div>
 
       {/* Right panel */}
-      <div style={{ flex:1, overflowY:"auto" }}
-        ref={el => { if (el && selected) el.scrollTop = 0; }}>
+      <div style={{ flex:1, overflowY:"auto" }} ref={rightPanelRef}>
         {!selected ? (
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
             justifyContent:"center", height:"60vh", color:C.inkFaint, gap:12 }}>
