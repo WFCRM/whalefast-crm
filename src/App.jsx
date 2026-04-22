@@ -1254,6 +1254,830 @@ function PlaceholderPage({ title, icon }) {
 }
 
 // ============================================================
+// COST PRICING — ราคาทุนขนส่ง
+// ============================================================
+
+function EditCell({ value, onSave, color }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(value);
+  useEffect(() => { setVal(value); }, [value]);
+  if (editing) return (
+    <input autoFocus type="number" value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => { setEditing(false); const n=parseFloat(val)||0; if(n!==value) onSave(n); }}
+      onKeyDown={e => e.key==="Enter" && e.target.blur()}
+      style={{ width:64, padding:"3px 5px", fontSize:12, border:`2px solid ${color||C.green}`,
+        borderRadius:5, textAlign:"right", fontFamily:font, outline:"none",
+        color:color||C.green, fontWeight:700 }}
+    />
+  );
+  return (
+    <span onClick={() => setEditing(true)}
+      style={{ display:"block", textAlign:"right", padding:"3px 10px", cursor:"pointer",
+        borderRadius:5, color:val>0?(color||C.green):C.inkFaint,
+        fontWeight:val>0?700:400, minWidth:64 }}
+      onMouseEnter={e=>e.currentTarget.style.background=C.greenBg}
+      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+      {val > 0 ? val : "—"}
+    </span>
+  );
+}
+
+// ── Flash Cost ────────────────────────────────────────────
+function FlashCostPage() {
+  const [svc, setSvc] = useState("STD");
+  const [tables, setTables] = useState([]);
+  const [rates, setRates] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
+
+  const SVCS = [
+    {key:"STD",  label:"มาตรฐาน", color:C.green,  maxKg:50},
+    {key:"BULKY",label:"Bulky",   color:C.amber,  maxKg:100},
+    {key:"FRUIT",label:"ผลไม้",   color:C.purple, maxKg:50},
+  ];
+  const ZONES = ["BKK","UPC"];
+  const ZONE_COLORS = {BKK:"#FFFBEB", UPC:"#F0FDF4"};
+  const SPECIAL = [
+    {key:"remote",  label:"Remote Area",  desc:"357 ตำบล", surcharge:50, color:C.red},
+    {key:"tourist", label:"Tourist Area", desc:"59 ตำบล",  surcharge:30, color:C.purple},
+    {key:"island",  label:"Island",       desc:"32 ตำบล",  surcharge:60, color:C.teal||"#0891B2"},
+  ];
+
+  const curSvc = SVCS.find(s=>s.key===svc);
+
+  useEffect(() => {
+    if (!window.XLSX) {
+      const s=document.createElement("script");
+      s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+      s.onload=()=>setXlsxReady(true); document.head.appendChild(s);
+    }
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    setLoading(true);
+    const data = await sb.get("price_tables?carrier_code=eq.FLASH&order=service_type,zone");
+    setTables(Array.isArray(data)?data:[]);
+    const rMap={};
+    for(const t of (Array.isArray(data)?data:[])){
+      const r=await sb.get(`price_table_rates?price_table_id=eq.${t.id}&order=weight_kg.asc`);
+      rMap[t.id]=Array.isArray(r)?r:[];
+    }
+    setRates(rMap); setLoading(false);
+  };
+
+  const getTable = (s,z) => tables.find(t=>(t.service_type||"STD")===s&&t.zone===z);
+  const getRate = (tid,kg) => (rates[tid]||[]).find(r=>r.weight_kg===kg)?.cost_price||0;
+
+  const ensureTable = async (s,z) => {
+    const ex=getTable(s,z); if(ex) return ex.id;
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/price_tables`,{
+      method:"POST",headers:{...sbHeaders(getToken()),Prefer:"return=representation"},
+      body:JSON.stringify({carrier_code:"FLASH",service_type:s,zone:z,
+        table_name:`Flash ${s} ${z}`,is_active:true}),
+    });
+    const d=await res.json(); const t=Array.isArray(d)?d[0]:d;
+    if(t?.id){setTables(p=>[...p,t]);setRates(p=>({...p,[t.id]:[]}));return t.id;}
+    return null;
+  };
+
+  const updateRate = async (tid,kg,price) => {
+    const ex=(rates[tid]||[]).find(r=>r.weight_kg===kg);
+    if(ex){
+      await sb.patch(`price_table_rates?id=eq.${ex.id}`,{cost_price:price});
+      setRates(p=>({...p,[tid]:p[tid].map(r=>r.weight_kg===kg?{...r,cost_price:price}:r)}));
+    } else {
+      const res=await fetch(`${SUPABASE_URL}/rest/v1/price_table_rates`,{
+        method:"POST",headers:{...sbHeaders(getToken()),Prefer:"return=representation"},
+        body:JSON.stringify({price_table_id:tid,weight_kg:kg,cost_price:price}),
+      });
+      const nr=await res.json();
+      if(Array.isArray(nr)&&nr[0]) setRates(p=>({...p,[tid]:[...(p[tid]||[]),nr[0]]}));
+    }
+  };
+
+  const handleImport = async (e) => {
+    const file=e.target.files[0]; if(!file||!window.XLSX) return;
+    const reader=new FileReader();
+    reader.onload=async(ev)=>{
+      try {
+        const wb=window.XLSX.read(ev.target.result,{type:"array"});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=window.XLSX.utils.sheet_to_json(ws,{defval:0});
+        let count=0;
+        for(const row of rows){
+          const kg=parseInt(row["kg"]||row["KG"]||row["น้ำหนัก"])||0; if(!kg) continue;
+          for(const s of ["STD","BULKY","FRUIT"]) for(const z of ["BKK","UPC"]){
+            const price=parseFloat(row[`${s}_${z}`])||0;
+            if(price>0){const tid=await ensureTable(s,z);if(tid){await updateRate(tid,kg,price);count++;}}
+          }
+        }
+        alert(`✅ Import สำเร็จ ${count} rates`); loadData();
+      } catch(err){alert("Error: "+err.message);}
+      e.target.value="";
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleTemplate = () => {
+    if(!window.XLSX) return;
+    const cols=["kg"];
+    ["STD","BULKY","FRUIT"].forEach(s=>["BKK","UPC"].forEach(z=>cols.push(`${s}_${z}`)));
+    const maxKg=100;
+    const rows=Array.from({length:maxKg},(_,i)=>{
+      const row={kg:i+1};
+      ["STD","BULKY","FRUIT"].forEach(s=>["BKK","UPC"].forEach(z=>{
+        const t=getTable(s,z); row[`${s}_${z}`]=t?(getRate(t.id,i+1)||""):"";
+      })); return row;
+    });
+    const ws=window.XLSX.utils.json_to_sheet(rows,{header:cols});
+    const wb=window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb,ws,"Flash Cost");
+    window.XLSX.writeFile(wb,"flash_cost_template.xlsx");
+  };
+
+  return (
+    <div style={{padding:"24px 32px",fontFamily:font}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+        <div>
+          <h3 style={{fontSize:18,fontWeight:700,color:C.ink,margin:"0 0 4px",letterSpacing:"-0.3px"}}>
+            Flash Express — ราคาทุน
+          </h3>
+          <div style={{fontSize:12,color:C.inkMid}}>คลิกตัวเลขเพื่อแก้ไขได้เลย</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <label style={{padding:"7px 16px",fontSize:12,borderRadius:8,
+            border:`1.5px solid ${C.blue}`,color:C.blue,cursor:xlsxReady?"pointer":"default",
+            fontFamily:font,fontWeight:600,background:C.surface}}>
+            📥 Import (.xlsx)
+            <input type="file" accept=".xlsx" onChange={handleImport} disabled={!xlsxReady} style={{display:"none"}}/>
+          </label>
+          <Btn variant="ghost" onClick={handleTemplate} disabled={!xlsxReady}>📤 Template</Btn>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:6,marginBottom:16}}>
+        {SVCS.map(s=>(
+          <button key={s.key} onClick={()=>setSvc(s.key)}
+            style={{padding:"7px 20px",fontSize:13,borderRadius:8,border:"none",
+              cursor:"pointer",fontFamily:font,fontWeight:600,
+              background:svc===s.key?s.color:C.bg,
+              color:svc===s.key?"#fff":C.inkMid,
+              outline:svc===s.key?"none":`1.5px solid ${C.border}`}}>
+            {s.label}
+            {s.key==="BULKY"&&<span style={{fontSize:10,marginLeft:5,opacity:0.8}}>1–100 kg</span>}
+          </button>
+        ))}
+      </div>
+
+      <Card style={{padding:0,overflow:"hidden",marginBottom:12}}>
+        <div style={{overflowX:"auto",maxHeight:460,overflowY:"auto"}}>
+          <table style={{borderCollapse:"collapse",fontSize:12,width:"100%"}}>
+            <thead style={{position:"sticky",top:0,zIndex:1}}>
+              <tr>
+                <th style={{padding:"8px 16px",background:C.bg,border:`1px solid ${C.border}`,
+                  color:C.inkFaint,fontWeight:700,fontSize:11,textAlign:"center",minWidth:56}}>KG</th>
+                {ZONES.map(z=>(
+                  <th key={z} style={{padding:"8px 32px",background:ZONE_COLORS[z],
+                    border:`1px solid ${C.border}`,color:C.ink,fontWeight:700,
+                    fontSize:11,textAlign:"center",minWidth:110}}>{z}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({length:curSvc.maxKg},(_,i)=>i+1).map(kg=>(
+                <tr key={kg} style={{background:kg%2===0?C.bg+"80":"white"}}>
+                  <td style={{padding:"2px 16px",border:`1px solid ${C.borderFaint}`,
+                    textAlign:"center",fontWeight:700,color:C.inkMid}}>{kg}</td>
+                  {ZONES.map(z=>{
+                    const t=getTable(svc,z); const val=t?getRate(t.id,kg):0;
+                    return(
+                      <td key={z} style={{padding:"1px 2px",border:`1px solid ${C.borderFaint}`,
+                        background:val>0?"#FAFFFC":"transparent"}}>
+                        {loading?<span style={{display:"block",padding:"3px 10px",color:C.inkFaint,fontSize:11}}>...</span>:
+                        <EditCell value={val} color={curSvc.color}
+                          onSave={async price=>{const tid=t?.id||await ensureTable(svc,z);if(tid)await updateRate(tid,kg,price);}}
+                        />}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:14}}>
+          ค่าพื้นที่พิเศษ Flash
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
+          {SPECIAL.map(a=>(
+            <div key={a.key} style={{border:`1.5px solid ${a.color}25`,borderRadius:10,
+              padding:"14px 16px",background:`${a.color}08`}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontSize:12,fontWeight:700,color:a.color}}>{a.label}</span>
+                <span style={{fontSize:10,color:C.inkFaint,background:C.bg,
+                  padding:"2px 7px",borderRadius:99}}>{a.desc}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:11,color:C.inkMid}}>บวกเพิ่ม/ชิ้น</span>
+                <div style={{display:"flex",alignItems:"center",gap:4}}>
+                  <input type="number" defaultValue={a.surcharge}
+                    style={{width:60,padding:"4px 8px",fontSize:13,
+                      border:`1.5px solid ${C.border}`,borderRadius:6,
+                      textAlign:"right",fontFamily:font,outline:"none",
+                      color:a.color,fontWeight:700}}
+                    onBlur={async e=>{
+                      await sb.patch(`carrier_surcharges?carrier_code=eq.FLASH&surcharge_code=eq.${a.key.toUpperCase()}`,
+                        {default_cost:parseFloat(e.target.value)||0});
+                    }}
+                    onKeyDown={e=>e.key==="Enter"&&e.target.blur()}
+                  />
+                  <span style={{fontSize:11,color:C.inkFaint}}>฿</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── DHL Cost ──────────────────────────────────────────────
+function DHLCostPage() {
+  const [svc, setSvc] = useState("PDO");
+  const [tables, setTables] = useState([]);
+  const [rates, setRates] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
+  const [remoteData, setRemoteData] = useState({cost:40, sell:50});
+
+  const ZONE_BY_SVC = {PDO:["BKK","UPC"], ECO:["BKK","UPC_CE","UPC_NNS"]};
+  const ZONE_COLORS = {BKK:"#FFFBEB",UPC:"#F0FDF4",UPC_CE:"#EFF6FF",UPC_NNS:"#FDF4FF"};
+
+  useEffect(()=>{
+    if(!window.XLSX){const s=document.createElement("script");
+      s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+      s.onload=()=>setXlsxReady(true);document.head.appendChild(s);}
+    loadData();
+  },[]);
+
+  const loadData = async () => {
+    setLoading(true);
+    const data=await sb.get("dhl_cost_tables?is_active=eq.true&order=service_type");
+    setTables(Array.isArray(data)?data:[]);
+    const rMap={};
+    for(const t of(Array.isArray(data)?data:[])){
+      const r=await sb.get(`dhl_cost_rates?cost_table_id=eq.${t.id}&order=weight_g_from.asc`);
+      rMap[t.id]=Array.isArray(r)?r:[];
+    }
+    setRates(rMap); setLoading(false);
+  };
+
+  const getTable = s => tables.find(t=>t.service_type===s);
+
+  const handleImport = async (e) => {
+    const file=e.target.files[0]; if(!file||!window.XLSX) return;
+    const reader=new FileReader();
+    reader.onload=async(ev)=>{
+      try {
+        const wb=window.XLSX.read(ev.target.result,{type:"array"});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const raw=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+        let ekpNo="";
+        for(let i=0;i<Math.min(10,raw.length)&&!ekpNo;i++)
+          for(let j=0;j<raw[i].length&&!ekpNo;j++)
+            if(/^\d{10}$/.test(String(raw[i][j]).trim())) ekpNo=String(raw[i][j]).trim();
+        if(!ekpNo){alert("ไม่พบ EKP No. (10 หลัก)");return;}
+        const svcType=file.name.toUpperCase().includes("ECO")?"ECO":"PDO";
+        let headerRow=-1;
+        for(let i=0;i<raw.length;i++) if(String(raw[i][0]).includes("Weight")){headerRow=i;break;}
+        if(headerRow<0){alert("ไม่พบ header");return;}
+        const hdr=raw[headerRow]; const colMap={};
+        hdr.forEach((v,j)=>{const s=String(v).trim();
+          if(s==="BKK") colMap.BKK=j;
+          else if(s.includes("C,E")||s.includes("SH")) colMap.UPC_CE=j;
+          else if(s.includes("N, NE")||s.includes("LH")) colMap.UPC_NNS=j;
+          else if(s==="UPC") colMap.UPC=j;
+        });
+        const rData=[];
+        for(let i=headerRow+1;i<raw.length;i++){
+          const row=raw[i]; const wt=String(row[0]).trim();
+          if(!wt||!wt.includes("-")) continue;
+          const parts=wt.split("-");
+          const from=parseInt(parts[0].trim().replace(/,/g,""))||0;
+          const to=parseInt(parts[parts.length-1].trim().replace(/,/g,""));
+          if(isNaN(to)) continue;
+          const entry={weight_g_from:from,weight_g_to:to};
+          Object.entries(colMap).forEach(([z,c])=>{entry[`cost_${z.toLowerCase()}`]=parseFloat(row[c])||0;});
+          rData.push(entry);
+        }
+        if(!rData.length){alert("ไม่พบข้อมูลราคา");return;}
+        const tRes=await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_tables`,{
+          method:"POST",headers:{...sbHeaders(getToken()),Prefer:"resolution=merge-duplicates,return=representation"},
+          body:JSON.stringify({ekp_no:ekpNo,service_type:svcType,account_name:`WhaleFast DHL (${svcType})`,is_active:true}),
+        });
+        const tData=await tRes.json();
+        const tableId=Array.isArray(tData)?tData[0]?.id:tData?.id;
+        if(!tableId){alert("สร้างตารางไม่สำเร็จ");return;}
+        await sb.del(`dhl_cost_rates?cost_table_id=eq.${tableId}`);
+        const batch=rData.map(r=>({...r,cost_table_id:tableId}));
+        for(let i=0;i<batch.length;i+=50)
+          await fetch(`${SUPABASE_URL}/rest/v1/dhl_cost_rates`,{
+            method:"POST",headers:sbHeaders(getToken()),body:JSON.stringify(batch.slice(i,i+50)),
+          });
+        alert(`✅ Import DHL ${svcType} (EKP: ${ekpNo}) สำเร็จ ${rData.length} rows`);
+        loadData();
+      } catch(err){alert("Error: "+err.message);}
+      e.target.value="";
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const curTable=getTable(svc);
+  const curRates=curTable?(rates[curTable.id]||[]):[];
+  const curZones=ZONE_BY_SVC[svc];
+
+  return (
+    <div style={{padding:"24px 32px",fontFamily:font}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+        <div>
+          <h3 style={{fontSize:18,fontWeight:700,color:C.ink,margin:"0 0 4px",letterSpacing:"-0.3px"}}>
+            DHL — ราคาทุน
+          </h3>
+          <div style={{fontSize:12,color:C.inkMid}}>คิดตาม gram · Import จาก Rate Card DHL โดยตรง</div>
+        </div>
+        <label style={{padding:"7px 16px",fontSize:12,borderRadius:8,
+          border:`1.5px solid ${C.blue}`,color:C.blue,cursor:xlsxReady?"pointer":"default",
+          fontFamily:font,fontWeight:600,background:C.surface}}>
+          📥 Import Rate Card (.xlsx)
+          <input type="file" accept=".xlsx" onChange={handleImport} disabled={!xlsxReady} style={{display:"none"}}/>
+        </label>
+      </div>
+
+      <div style={{display:"flex",gap:6,marginBottom:16}}>
+        {[{key:"PDO",label:"PDO — 2 zones",c:C.blue},{key:"ECO",label:"ECO — 3 zones",c:C.green}].map(s=>(
+          <button key={s.key} onClick={()=>setSvc(s.key)}
+            style={{padding:"7px 20px",fontSize:13,borderRadius:8,border:"none",cursor:"pointer",
+              fontFamily:font,fontWeight:600,background:svc===s.key?s.c:C.bg,
+              color:svc===s.key?"#fff":C.inkMid,
+              outline:svc===s.key?"none":`1.5px solid ${C.border}`}}>{s.label}</button>
+        ))}
+      </div>
+
+      <Card style={{padding:0,overflow:"hidden",marginBottom:12}}>
+        <div style={{padding:"12px 20px",borderBottom:`1px solid ${C.border}`,
+          display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.ink}}>DHL {svc}</span>
+            {curTable&&<span style={{fontSize:11,color:C.inkFaint}}>
+              EKP: {curTable.ekp_no} · {curRates.length} rows</span>}
+            {!curTable&&<span style={{fontSize:11,color:C.amber}}>
+              ⚠ ยังไม่มีข้อมูล — กด Import Rate Card</span>}
+          </div>
+        </div>
+        {loading?<Spinner/>:curRates.length===0?(
+          <div style={{padding:32,textAlign:"center",color:C.inkFaint,fontSize:13}}>
+            Import Rate Card จาก DHL เพื่อดูตาราง
+          </div>
+        ):(
+          <div style={{overflowX:"auto",maxHeight:460,overflowY:"auto"}}>
+            <table style={{borderCollapse:"collapse",fontSize:12,width:"100%"}}>
+              <thead style={{position:"sticky",top:0,zIndex:1}}>
+                <tr>
+                  <th style={{padding:"8px 16px",background:C.bg,border:`1px solid ${C.border}`,
+                    color:C.inkFaint,fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>น้ำหนัก (g)</th>
+                  {curZones.map(z=>(
+                    <th key={z} style={{padding:"8px 32px",background:ZONE_COLORS[z],
+                      border:`1px solid ${C.border}`,color:C.ink,fontWeight:700,
+                      fontSize:11,textAlign:"center",minWidth:110}}>{z}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {curRates.map((row,i)=>(
+                  <tr key={row.id} style={{background:i%2===0?C.bg+"80":"white"}}>
+                    <td style={{padding:"4px 16px",border:`1px solid ${C.borderFaint}`,
+                      fontWeight:600,color:C.inkMid,whiteSpace:"nowrap"}}>
+                      {row.weight_g_from.toLocaleString()}–{row.weight_g_to.toLocaleString()}
+                    </td>
+                    {curZones.map(z=>{
+                      const field=`cost_${z.toLowerCase()}`;
+                      const val=row[field]||0;
+                      return(
+                        <td key={z} style={{padding:"1px 2px",border:`1px solid ${C.borderFaint}`,
+                          background:val>0?"#FAFFFC":"transparent"}}>
+                          <EditCell value={val} color={C.blue}
+                            onSave={async price=>{
+                              await sb.patch(`dhl_cost_rates?id=eq.${row.id}`,{[field]:price});
+                              setRates(p=>({...p,[curTable.id]:p[curTable.id].map(r=>
+                                r.id===row.id?{...r,[field]:price}:r)}));
+                            }}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:14}}>
+          ค่าพื้นที่ห่างไกล DHL (Remote Area) — 326 ตำบล
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          {[{label:"ต้นทุน",field:"cost",val:remoteData.cost,color:C.inkMid},
+            {label:"ราคาขาย default",field:"sell",val:remoteData.sell,color:C.green}].map(f=>(
+            <div key={f.label} style={{border:`1.5px solid ${C.border}`,borderRadius:10,padding:"14px 16px"}}>
+              <div style={{fontSize:11,color:C.inkFaint,marginBottom:8,textTransform:"uppercase",
+                letterSpacing:"0.05em",fontWeight:700}}>{f.label}</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <input type="number" defaultValue={f.val}
+                  style={{width:80,padding:"6px 10px",fontSize:15,border:`1.5px solid ${C.border}`,
+                    borderRadius:6,textAlign:"right",fontFamily:font,outline:"none",
+                    color:f.color,fontWeight:700}}
+                  onBlur={e=>setRemoteData(p=>({...p,[f.field]:parseFloat(e.target.value)||0}))}
+                  onKeyDown={e=>e.key==="Enter"&&e.target.blur()}
+                />
+                <span style={{fontSize:12,color:C.inkFaint}}>฿/ชิ้น</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── SPX Cost ──────────────────────────────────────────────
+function SPXCostPage() {
+  const [tables, setTables] = useState([]);
+  const [rates, setRates] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [xlsxReady, setXlsxReady] = useState(!!window.XLSX);
+  const [remote, setRemote] = useState(50);
+
+  const ZONES=["BKK","UPC"];
+  const ZONE_COLORS={BKK:"#FFFBEB",UPC:"#F0FDF4"};
+
+  useEffect(()=>{
+    if(!window.XLSX){const s=document.createElement("script");
+      s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+      s.onload=()=>setXlsxReady(true);document.head.appendChild(s);}
+    loadData();
+  },[]);
+
+  const loadData = async () => {
+    setLoading(true);
+    const data=await sb.get("price_tables?carrier_code=eq.SPX&order=zone");
+    setTables(Array.isArray(data)?data:[]);
+    const rMap={};
+    for(const t of(Array.isArray(data)?data:[])){
+      const r=await sb.get(`price_table_rates?price_table_id=eq.${t.id}&order=weight_kg.asc`);
+      rMap[t.id]=Array.isArray(r)?r:[];
+    }
+    setRates(rMap); setLoading(false);
+  };
+
+  const getTable = z => tables.find(t=>t.zone===z);
+  const getRate = (tid,kg) => (rates[tid]||[]).find(r=>r.weight_kg===kg)?.cost_price||0;
+
+  const ensureTable = async z => {
+    const ex=getTable(z); if(ex) return ex.id;
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/price_tables`,{
+      method:"POST",headers:{...sbHeaders(getToken()),Prefer:"return=representation"},
+      body:JSON.stringify({carrier_code:"SPX",zone:z,table_name:`SPX ${z}`,is_active:true}),
+    });
+    const d=await res.json(); const t=Array.isArray(d)?d[0]:d;
+    if(t?.id){setTables(p=>[...p,t]);setRates(p=>({...p,[t.id]:[]}));return t.id;}
+    return null;
+  };
+
+  const updateRate = async (tid,kg,price) => {
+    const ex=(rates[tid]||[]).find(r=>r.weight_kg===kg);
+    if(ex){
+      await sb.patch(`price_table_rates?id=eq.${ex.id}`,{cost_price:price});
+      setRates(p=>({...p,[tid]:p[tid].map(r=>r.weight_kg===kg?{...r,cost_price:price}:r)}));
+    } else {
+      const res=await fetch(`${SUPABASE_URL}/rest/v1/price_table_rates`,{
+        method:"POST",headers:{...sbHeaders(getToken()),Prefer:"return=representation"},
+        body:JSON.stringify({price_table_id:tid,weight_kg:kg,cost_price:price}),
+      });
+      const nr=await res.json();
+      if(Array.isArray(nr)&&nr[0]) setRates(p=>({...p,[tid]:[...(p[tid]||[]),nr[0]]}));
+    }
+  };
+
+  const handleImport = async e => {
+    const file=e.target.files[0]; if(!file||!window.XLSX) return;
+    const reader=new FileReader();
+    reader.onload=async ev=>{
+      try {
+        const wb=window.XLSX.read(ev.target.result,{type:"array"});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=window.XLSX.utils.sheet_to_json(ws,{defval:0});
+        let count=0;
+        for(const row of rows){
+          const kg=parseInt(row["kg"]||row["KG"])||0; if(!kg) continue;
+          for(const z of ZONES){
+            const price=parseFloat(row[z])||0;
+            if(price>0){const tid=await ensureTable(z);if(tid){await updateRate(tid,kg,price);count++;}}
+          }
+        }
+        alert(`✅ Import สำเร็จ ${count} rates`); loadData();
+      } catch(err){alert("Error: "+err.message);}
+      e.target.value="";
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleTemplate = () => {
+    if(!window.XLSX) return;
+    const rows=Array.from({length:50},(_,i)=>{
+      const row={kg:i+1};
+      ZONES.forEach(z=>{const t=getTable(z);row[z]=t?(getRate(t.id,i+1)||""):"";});
+      return row;
+    });
+    const ws=window.XLSX.utils.json_to_sheet(rows,{header:["kg",...ZONES]});
+    const wb=window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb,ws,"SPX Cost");
+    window.XLSX.writeFile(wb,"spx_cost_template.xlsx");
+  };
+
+  return (
+    <div style={{padding:"24px 32px",fontFamily:font}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+        <div>
+          <h3 style={{fontSize:18,fontWeight:700,color:C.ink,margin:"0 0 4px",letterSpacing:"-0.3px"}}>
+            SPX (Shopee Express) — ราคาทุน
+          </h3>
+          <div style={{fontSize:12,color:C.inkMid}}>zone BKK/UPC · kg 1–50</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <label style={{padding:"7px 16px",fontSize:12,borderRadius:8,
+            border:`1.5px solid ${C.blue}`,color:C.blue,cursor:xlsxReady?"pointer":"default",
+            fontFamily:font,fontWeight:600,background:C.surface}}>
+            📥 Import (.xlsx)
+            <input type="file" accept=".xlsx" onChange={handleImport} disabled={!xlsxReady} style={{display:"none"}}/>
+          </label>
+          <Btn variant="ghost" onClick={handleTemplate} disabled={!xlsxReady}>📤 Template</Btn>
+        </div>
+      </div>
+
+      <Card style={{padding:0,overflow:"hidden",marginBottom:12}}>
+        <div style={{overflowX:"auto",maxHeight:460,overflowY:"auto"}}>
+          <table style={{borderCollapse:"collapse",fontSize:12,width:"100%"}}>
+            <thead style={{position:"sticky",top:0,zIndex:1}}>
+              <tr>
+                <th style={{padding:"8px 16px",background:C.bg,border:`1px solid ${C.border}`,
+                  color:C.inkFaint,fontWeight:700,fontSize:11,textAlign:"center",minWidth:56}}>KG</th>
+                {ZONES.map(z=>(
+                  <th key={z} style={{padding:"8px 32px",background:ZONE_COLORS[z],
+                    border:`1px solid ${C.border}`,color:C.ink,fontWeight:700,
+                    fontSize:11,textAlign:"center",minWidth:110}}>{z}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({length:50},(_,i)=>i+1).map(kg=>(
+                <tr key={kg} style={{background:kg%2===0?C.bg+"80":"white"}}>
+                  <td style={{padding:"2px 16px",border:`1px solid ${C.borderFaint}`,
+                    textAlign:"center",fontWeight:700,color:C.inkMid}}>{kg}</td>
+                  {ZONES.map(z=>{
+                    const t=getTable(z); const val=t?getRate(t.id,kg):0;
+                    return(
+                      <td key={z} style={{padding:"1px 2px",border:`1px solid ${C.borderFaint}`,
+                        background:val>0?"#FAFFFC":"transparent"}}>
+                        {loading?<span style={{display:"block",padding:"3px 10px",color:C.inkFaint,fontSize:11}}>...</span>:
+                        <EditCell value={val} color={C.red}
+                          onSave={async price=>{const tid=t?.id||await ensureTable(z);if(tid)await updateRate(tid,kg,price);}}
+                        />}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:14}}>
+          ค่าพื้นที่ห่างไกล SPX (Remote Area)
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
+          <div style={{border:`1.5px solid ${C.red}25`,borderRadius:10,padding:"14px 20px",
+            background:`${C.red}08`,flex:1}}>
+            <div style={{fontSize:11,color:C.red,fontWeight:700,marginBottom:8}}>Remote Area</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:11,color:C.inkMid}}>บวกเพิ่ม/ชิ้น</span>
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <input type="number" defaultValue={50}
+                  style={{width:60,padding:"4px 8px",fontSize:13,
+                    border:`1.5px solid ${C.border}`,borderRadius:6,
+                    textAlign:"right",fontFamily:font,outline:"none",
+                    color:C.red,fontWeight:700}}
+                  onBlur={e=>setRemote(parseFloat(e.target.value)||0)}
+                  onKeyDown={e=>e.key==="Enter"&&e.target.blur()}
+                />
+                <span style={{fontSize:11,color:C.inkFaint}}>฿</span>
+              </div>
+            </div>
+          </div>
+          <div style={{fontSize:12,color:C.inkFaint,flex:2}}>
+            ค่าพื้นที่ห่างไกลจะถูกบวกเพิ่มจากราคาปกติ<br/>
+            ดูรายชื่อตำบลได้ที่หน้า Surcharge
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── Fulfillment ───────────────────────────────────────────
+function FulfillmentCostPage() {
+  const [services, setServices] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newForm, setNewForm] = useState({name:"",unit:"",price:""});
+
+  useEffect(()=>{loadData();},[]);
+
+  const loadData = async () => {
+    setLoading(true);
+    const data=await sb.get("fulfillment_services?order=sort_order,created_at");
+    setServices(Array.isArray(data)?data:[]); setLoading(false);
+  };
+
+  const handleAdd = async () => {
+    if(!newForm.name) return;
+    try {
+      await sb.post("fulfillment_services",{
+        service_name:newForm.name, unit:newForm.unit,
+        default_cost:parseFloat(newForm.price)||0, is_active:true,
+      });
+      setShowAdd(false); setNewForm({name:"",unit:"",price:""}); loadData();
+    } catch(e){alert("Error: "+e.message);}
+  };
+
+  return (
+    <div style={{padding:"24px 32px",fontFamily:font}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+        <div>
+          <h3 style={{fontSize:18,fontWeight:700,color:C.ink,margin:"0 0 4px",letterSpacing:"-0.3px"}}>
+            Fulfillment — ค่าบริการ
+          </h3>
+          <div style={{fontSize:12,color:C.inkMid}}>เพิ่ม/จัดการ service และราคา default</div>
+        </div>
+        <Btn onClick={()=>setShowAdd(!showAdd)}>+ เพิ่ม Service</Btn>
+      </div>
+
+      {showAdd&&(
+        <Card style={{marginBottom:16,background:C.greenBg,border:`1.5px solid ${C.green}40`}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.green,marginBottom:12}}>เพิ่ม Service ใหม่</div>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:12,marginBottom:12}}>
+            <FieldGroup label="ชื่อ Service">
+              <Input value={newForm.name} onChange={e=>setNewForm({...newForm,name:e.target.value})}
+                placeholder="เช่น ตรวจสอบสินค้า (QC)"/>
+            </FieldGroup>
+            <FieldGroup label="หน่วย">
+              <Input value={newForm.unit} onChange={e=>setNewForm({...newForm,unit:e.target.value})}
+                placeholder="ชิ้น / ออเดอร์ / ลัง"/>
+            </FieldGroup>
+            <FieldGroup label="ราคา default (฿)">
+              <Input value={newForm.price} onChange={e=>setNewForm({...newForm,price:e.target.value})}
+                placeholder="0" type="number"/>
+            </FieldGroup>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <Btn onClick={handleAdd}>บันทึก</Btn>
+            <Btn variant="ghost" onClick={()=>{setShowAdd(false);setNewForm({name:"",unit:"",price:""});}}>ยกเลิก</Btn>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{padding:0,overflow:"hidden"}}>
+        {loading?<Spinner/>:services.length===0?(
+          <div style={{padding:32,textAlign:"center",color:C.inkFaint,fontSize:13}}>
+            ยังไม่มี service — กด + เพิ่ม Service เพื่อเริ่ม
+          </div>
+        ):(
+          <table style={{borderCollapse:"collapse",fontSize:13,width:"100%"}}>
+            <thead>
+              <tr style={{background:C.bg}}>
+                {["ชื่อ Service","หน่วย","ราคา default (฿)","สถานะ",""].map(h=>(
+                  <th key={h} style={{padding:"10px 20px",textAlign:"left",
+                    borderBottom:`1.5px solid ${C.border}`,fontSize:11,fontWeight:700,
+                    color:C.inkFaint,textTransform:"uppercase",letterSpacing:"0.05em"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {services.map(s=>(
+                <tr key={s.id} style={{borderBottom:`1px solid ${C.borderFaint}`}}>
+                  <td style={{padding:"12px 20px",color:C.ink,fontWeight:500}}>{s.service_name}</td>
+                  <td style={{padding:"12px 20px",color:C.inkMid,fontSize:12}}>{s.unit||"—"}</td>
+                  <td style={{padding:"8px 20px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <input type="number" defaultValue={s.default_cost}
+                        style={{width:72,padding:"5px 8px",fontSize:13,
+                          border:`1.5px solid ${C.border}`,borderRadius:6,
+                          textAlign:"right",fontFamily:font,outline:"none",
+                          color:C.green,fontWeight:700}}
+                        onBlur={async e=>await sb.patch(`fulfillment_services?id=eq.${s.id}`,
+                          {default_cost:parseFloat(e.target.value)||0})}
+                        onKeyDown={e=>e.key==="Enter"&&e.target.blur()}
+                      />
+                      <span style={{fontSize:11,color:C.inkFaint}}>฿</span>
+                    </div>
+                  </td>
+                  <td style={{padding:"12px 20px"}}>
+                    <span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:99,
+                      background:s.is_active?C.greenBg:C.slateBg,
+                      color:s.is_active?C.green:C.slate,cursor:"pointer"}}
+                      onClick={async()=>{
+                        await sb.patch(`fulfillment_services?id=eq.${s.id}`,{is_active:!s.is_active});
+                        setServices(p=>p.map(x=>x.id===s.id?{...x,is_active:!x.is_active}:x));
+                      }}>
+                      {s.is_active?"ใช้งาน":"ปิด"}
+                    </span>
+                  </td>
+                  <td style={{padding:"12px 20px",textAlign:"right"}}>
+                    <span style={{fontSize:11,color:C.red,cursor:"pointer"}}
+                      onClick={async()=>{
+                        if(!confirm("ลบ service นี้?")) return;
+                        await sb.del(`fulfillment_services?id=eq.${s.id}`);
+                        setServices(p=>p.filter(x=>x.id!==s.id));
+                      }}>ลบ</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+      <div style={{marginTop:10,fontSize:11,color:C.inkFaint}}>
+        ราคา default ใช้กับลูกค้าทั่วไป · override ต่อลูกค้าได้ที่หน้าลูกค้า
+      </div>
+    </div>
+  );
+}
+
+// ── Cost Pricing Main Page ─────────────────────────────────
+const COST_CARRIERS = [
+  {key:"flash",       label:"Flash",       icon:"⚡", color:C.amber},
+  {key:"dhl",         label:"DHL",         icon:"📦", color:C.blue},
+  {key:"spx",         label:"SPX",         icon:"🛍", color:C.red},
+  {key:"fulfillment", label:"Fulfillment", icon:"🏭", color:C.slate},
+];
+
+function CostPricingPage() {
+  const [carrier, setCarrier] = useState("flash");
+  const pages = {
+    flash:       <FlashCostPage/>,
+    dhl:         <DHLCostPage/>,
+    spx:         <SPXCostPage/>,
+    fulfillment: <FulfillmentCostPage/>,
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,fontFamily:font}}>
+      {/* Header + tabs */}
+      <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`}}>
+        <div style={{padding:"20px 32px 0"}}>
+          <h2 style={{fontSize:22,fontWeight:700,color:C.ink,margin:"0 0 16px",letterSpacing:"-0.5px"}}>
+            ราคาทุนขนส่ง
+          </h2>
+          <div style={{display:"flex",gap:0}}>
+            {COST_CARRIERS.map(c=>(
+              <button key={c.key} onClick={()=>setCarrier(c.key)}
+                style={{padding:"10px 24px",fontSize:13,border:"none",cursor:"pointer",
+                  fontFamily:font,fontWeight:carrier===c.key?700:400,
+                  background:"transparent",transition:"all 0.15s",
+                  color:carrier===c.key?c.color:C.inkMid,
+                  borderBottom:carrier===c.key?`2.5px solid ${c.color}`:"2.5px solid transparent",
+                  marginBottom:"-1px"}}>
+                <span style={{marginRight:6}}>{c.icon}</span>{c.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {pages[carrier]}
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function App() {
@@ -1299,7 +2123,7 @@ export default function App() {
 
   const PAGES = {
     customers:    <CustomersPage/>,
-    cost_pricing: <PlaceholderPage title="ราคาทุนขนส่ง" icon="◫"/>,
+    cost_pricing: <CostPricingPage/>,
     sell_pricing: <PlaceholderPage title="ราคาขาย" icon="◑"/>,
     carriers:     <PlaceholderPage title="ข้อมูลขนส่ง" icon="▷"/>,
   };
