@@ -999,11 +999,12 @@ function CustomersPage() {
             <div style={{ fontSize:16, fontWeight:700, color:C.ink }}>รายชื่อลูกค้า</div>
             <button onClick={exportCustomers} disabled={!xlsxReady || exporting}
               title="Export ลูกค้าทั้งหมดเป็น Excel"
-              style={{ padding:"5px 10px", fontSize:11, borderRadius:6,
+              style={{ padding:"5px 12px", fontSize:11, borderRadius:6,
                 border:`1px solid ${C.green}`, background:C.greenBg,
                 color:C.green, cursor:xlsxReady?"pointer":"default",
-                fontFamily:font, fontWeight:600, opacity:exporting?0.6:1 }}>
-              {exporting ? "..." : "⬇ Excel"}
+                fontFamily:font, fontWeight:600, opacity:exporting?0.6:1,
+                marginLeft:"auto" }}>
+              {exporting ? "กำลัง Export..." : "⬇ Excel"}
             </button>
           </div>
 
@@ -1030,7 +1031,11 @@ function CustomersPage() {
           {/* Search */}
           <div style={{ position:"relative" }}>
             <input value={searchInput}
-              onChange={e => setSearchInput(e.target.value)}
+              onChange={e => {
+                const v = e.target.value;
+                setSearchInput(v);
+                if (v === "") setSearch(""); // auto reset when cleared
+              }}
               onKeyDown={e => e.key==="Enter" && setSearch(searchInput)}
               placeholder="ค้นหา account / ชื่อ..."
               style={{ width:"100%", padding:"8px 12px 8px 32px", fontSize:13,
@@ -1039,6 +1044,16 @@ function CustomersPage() {
             />
             <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)",
               color:C.inkFaint, fontSize:13, pointerEvents:"none" }}>⌕</span>
+            {searchInput && (
+              <span onClick={() => { setSearchInput(""); setSearch(""); }}
+                style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)",
+                  color:C.inkFaint, fontSize:14, cursor:"pointer", lineHeight:1,
+                  padding:"2px 4px", borderRadius:4 }}
+                onMouseEnter={e => e.currentTarget.style.color = C.ink}
+                onMouseLeave={e => e.currentTarget.style.color = C.inkFaint}>
+                ✕
+              </span>
+            )}
           </div>
         </div>
 
