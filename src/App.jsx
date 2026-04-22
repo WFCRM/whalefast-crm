@@ -2203,16 +2203,17 @@ function CustomerSellTable({ customer, carrier, serviceType, defaultRows, overri
           <Btn variant="ghost" size="sm" onClick={handleReset} disabled={saving||overrideCount===0}>
             🔄 Reset Default
           </Btn>
+          <Btn variant="outline" size="sm" onClick={handleExport} disabled={!xlsxReady||!defaultRows.length}>
+            📤 Export
+          </Btn>
           <label style={{ padding:"5px 14px", fontSize:11, borderRadius:7,
-            border:`1.5px solid ${C.blue}`, color:C.blue, background:C.surface,
-            cursor:xlsxReady?"pointer":"default", fontFamily:font, fontWeight:600 }}>
-            📥 Import Excel
+            border:`1.5px solid ${C.blue}`, color:C.blue, background:C.blueBg,
+            cursor:xlsxReady?"pointer":"default", fontFamily:font, fontWeight:700,
+            display:"inline-flex", alignItems:"center", gap:4 }}>
+            📥 Import
             <input type="file" accept=".xlsx" onChange={handleImport}
               disabled={!xlsxReady} style={{ display:"none" }}/>
           </label>
-          <Btn variant="outline" size="sm" onClick={handleExport} disabled={!xlsxReady||!defaultRows.length}>
-            📤 Export Excel
-          </Btn>
         </div>
       </div>
 
