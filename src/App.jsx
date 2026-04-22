@@ -2757,7 +2757,7 @@ function WFCustomersPage() {
 
             {/* Tabs */}
             <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:`1px solid ${colors.border}`}}>
-              {[{key:"flash",label:"ราคาขาย Flash"},{key:"dhl",label:"ราคาขาย DHL"},{key:"surcharge",label:"Surcharge"},{key:"sender",label:"Sender Mapping"}].map(t=>(
+              {[{key:"info",label:"ข้อมูลลูกค้า"},{key:"flash",label:"ราคาขาย Flash"},{key:"dhl",label:"ราคาขาย DHL"},{key:"surcharge",label:"Surcharge"},{key:"sender",label:"Sender Mapping"}].map(t=>(
                 <button key={t.key} onClick={()=>setTab(t.key)}
                   style={{padding:"8px 16px",fontSize:13,border:"none",cursor:"pointer",fontFamily:font,fontWeight:500,borderRadius:"8px 8px 0 0",
                     background:tab===t.key?colors.primary:"transparent",color:tab===t.key?"#fff":colors.textMuted}}>
@@ -2792,7 +2792,7 @@ function WFCustomersPage() {
                 </div>
                 <button onClick={handleSave} style={{...css.btnPrimary,width:"auto",padding:"10px 24px",fontSize:13}}>💾 บันทึก</button>
               </div>
-            ):{loadingPricing?<div style={{textAlign:"center",color:colors.textMuted,padding:24}}>กำลังโหลด...</div>:(
+            ):(loadingPricing?<div style={{textAlign:"center",color:colors.textMuted,padding:24}}>กำลังโหลด...</div>:(
               <>
                 {tab==="flash"&&(
                   <div>
@@ -2873,7 +2873,7 @@ function WFCustomersPage() {
                   </div>
                 )}
               </>
-            )}
+            ))
             )}
           </div>
         )}
@@ -3101,7 +3101,6 @@ function SellPricingPage() {
   const [xlsxLoaded, setXlsxLoaded] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
-  const [flashServiceType, setFlashServiceType] = useState("STD");
 
   useEffect(() => { loadCustomers(); loadXlsx(); loadCarrierSurcharges(); }, []);
   useEffect(() => { loadCustomers(); }, [search]);
