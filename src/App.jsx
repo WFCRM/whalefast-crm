@@ -478,6 +478,7 @@ function CustomerDetail({ customer, onSaved }) {
   const [form, setForm] = useState({ ...customer });
   const [saving, setSaving] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const originalData = useRef({ ...customer });
   const [pricingTables, setPricingTables] = useState([]);
   const [pricingRates, setPricingRates] = useState({});
   const [surcharges, setSurcharges] = useState([]);
@@ -489,7 +490,11 @@ function CustomerDetail({ customer, onSaved }) {
   const [importMsg, setImportMsg] = useState(null);
   const [flashType, setFlashType] = useState("STD");
 
-  useEffect(() => { setForm({ ...customer }); setTab("info"); }, [customer.id]);
+  useEffect(() => { 
+    setForm({ ...customer }); 
+    originalData.current = { ...customer };
+    setTab("info"); 
+  }, [customer.id]);
 
   useEffect(() => {
     if (!window.XLSX) {
@@ -530,7 +535,7 @@ function CustomerDetail({ customer, onSaved }) {
 
   const handleCancelSave = () => {
     setShowConfirm(false);
-    setForm({ ...customer }); // reset form to original data
+    setForm({ ...originalData.current }); // reset to original using ref
   };
 
   const doSave = async () => {
@@ -540,6 +545,7 @@ function CustomerDetail({ customer, onSaved }) {
       await sb.patch(`wf_customers?id=eq.${customer.id}`, {
         ...form, cod_percent: parseFloat(form.cod_percent) || 2
       });
+      originalData.current = { ...customer, ...form }; // update ref after save
       onSaved({ ...customer, ...form });
     } catch (e) { alert("บันทึกไม่สำเร็จ: " + e.message); }
     setSaving(false);
