@@ -528,6 +528,11 @@ function CustomerDetail({ customer, onSaved }) {
 
   const handleSave = () => setShowConfirm(true);
 
+  const handleCancelSave = () => {
+    setShowConfirm(false);
+    setForm({ ...customer }); // reset form to original data
+  };
+
   const doSave = async () => {
     setShowConfirm(false);
     setSaving(true);
@@ -830,7 +835,7 @@ function CustomerDetail({ customer, onSaved }) {
         </div>
       )}
     </div>
-    <Modal open={showConfirm} onClose={() => setShowConfirm(false)} title="" width={380}>
+    <Modal open={showConfirm} onClose={handleCancelSave} title="" width={380}>
       <div style={{ textAlign:"center" }}>
         <div style={{ fontSize:32, marginBottom:8 }}>💾</div>
         <h3 style={{ fontSize:17, fontWeight:700, margin:"0 0 8px", color:C.ink }}>ยืนยันการบันทึก</h3>
@@ -839,7 +844,7 @@ function CustomerDetail({ customer, onSaved }) {
           <strong style={{ color:C.ink }}>{customer.account_code}</strong> ใช่ไหม?
         </p>
         <div style={{ display:"flex", gap:10 }}>
-          <Btn variant="ghost" onClick={() => setShowConfirm(false)} style={{ flex:1 }}>ยกเลิก</Btn>
+          <Btn variant="ghost" onClick={handleCancelSave} style={{ flex:1 }}>ยกเลิก</Btn>
           <Btn onClick={doSave} style={{ flex:1 }}>✅ ยืนยัน บันทึก</Btn>
         </div>
       </div>
