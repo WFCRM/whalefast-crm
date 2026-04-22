@@ -2155,6 +2155,7 @@ function WFCustomersPage() {
   const [xlsxLoaded, setXlsxLoaded] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const [flashServiceType, setFlashServiceType] = useState("STD");
 
   const [form, setForm] = useState({
     account_code:"", account_parent:"CZ0108", customer_name:"", status:"active",
@@ -2619,7 +2620,7 @@ function WFCustomersPage() {
                       {c.status!=="active"&&<span style={{fontSize:9,padding:"1px 5px",borderRadius:4,fontWeight:600,
                         background:c.status==="lost"?colors.dangerLight:c.status==="stop_trade"?"#FFF3E0":"#F5F5F5",
                         color:c.status==="lost"?colors.danger:c.status==="stop_trade"?"#E65100":"#757575"}}>
-                        {c.status==="inactive"?"หยุด":c.status==="lost"?"Lost":"Stop"}
+                        {c.status==="inactive"?"หยุด":c.status==="lost"?"Lost":c.status==="stop_trade"?"Stop Trade":"หยุด"}
                       </span>}
                     </div>
                     <div style={{fontSize:11,color:colors.textMuted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.customer_name}</div>
@@ -2814,10 +2815,10 @@ function WFCustomersPage() {
                         {pricingTables.some(t=>t.carrier_code==="FLASH"&&(t.service_type||"STD")===flashServiceType)?"✓ มีราคา — คลิกตัวเลขแก้ไข":"ยังไม่มีราคา — คลิกเพื่อเพิ่ม"}
                       </span>
                     </div>
-                    <PricingGrid carrier="FLASH" zones={["BKK","UPC"]} serviceType={flashServiceType}/>
+                    <PricingTable carrier="FLASH" zones={["BKK","UPC"]}/>
                   </div>
                 )}
-                {tab==="dhl"&&<PricingGrid carrier="DHL" zones={["BKK","UPC_CE","UPC_NNS"]}/>}
+                {tab==="dhl"&&<PricingTable carrier="DHL" zones={["BKK","UPC_CE","UPC_NNS"]}/>}
                 {tab==="surcharge"&&(
                   <div>
                     <div style={{marginBottom:10,fontSize:13,color:colors.textMuted}}>กำหนดราคา surcharge เฉพาะลูกค้านี้ — ถ้าไม่กำหนด ใช้ค่า default</div>
