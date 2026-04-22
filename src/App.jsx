@@ -2377,7 +2377,7 @@ function SellPricingPage() {
             <div style={{ fontSize:14 }}>เลือกลูกค้าจากรายการเพื่อดูและแก้ไขราคาขาย</div>
           </div>
         ) : (
-          <div key={selected.id} style={{ padding:"24px 28px" }}>
+          <div style={{ padding:"24px 28px" }}>
             {/* Header */}
             <div style={{ marginBottom:20 }}>
               <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
